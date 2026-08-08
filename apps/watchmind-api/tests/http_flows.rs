@@ -65,6 +65,15 @@ async fn library_flow_versions_profiles_and_preserves_old_explanations() {
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
+    let (status, library) = call(&app, "GET", "/api/library", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(library.as_array().unwrap().len(), 1);
+    assert_eq!(library[0]["work"]["title"], "Death Note");
+    assert_eq!(
+        library[0]["library"]["comment"],
+        "Un duel psychologique marquant"
+    );
+
     let candidate = json!({
         "id": 5114, "title": "Fullmetal Alchemist: Brotherhood", "global_score": 9.1,
         "tags": [{"name": "Crime", "weight": 0.7}, {"name": "Adventure", "weight": 0.9}]

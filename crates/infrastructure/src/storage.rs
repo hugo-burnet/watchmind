@@ -184,6 +184,28 @@ impl LibraryRepository {
             })
             .transpose()
     }
+
+    /// Liste les entrées de bibliothèque dans un ordre déterministe.
+    /// # Errors
+    /// Retourne une erreur SQL ou si un identifiant persisté est invalide.
+    pub async fn all(&self) -> Result<Vec<LibraryEntry>, StorageError> {
+        sqlx::query("SELECT work_id, comment FROM library ORDER BY work_id")
+            .fetch_all(&self.0)
+            .await?
+            .into_iter()
+            .map(|row| {
+                let raw_id: i64 = row.try_get("work_id")?;
+                let raw_id = u32::try_from(raw_id).map_err(|_| DomainError::InvalidValue {
+                    field: "library.work_id",
+                    reason: "must fit in an unsigned 32-bit integer",
+                })?;
+                Ok(LibraryEntry {
+                    work_id: WorkId::new(raw_id)?,
+                    comment: row.try_get("comment")?,
+                })
+            })
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -7,6 +7,7 @@ SQLite/AniList dans `watchmind-infrastructure`.
 ## Flux de bibliothèque
 
 - `GET /api/anime/search?q=...` recherche AniList avec le cache local.
+- `GET /api/library` liste les œuvres ajoutées avec leur note et leurs événements.
 - `GET /api/works/{id}` relit l'œuvre, sa note avec aspects, son commentaire et
   ses événements.
 - `PUT /api/library/{id}` ajoute ou met à jour une œuvre et son commentaire.

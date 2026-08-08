@@ -57,3 +57,6 @@ devient horizontale et les états s'empilent sans débordement de page.
 
 Pour les régénérer, lancer `npm run preview`, puis `npm run capture` depuis
 `apps/watchmind-web` avec les navigateurs Playwright installés.
+
+Le lot 16 ajoute les captures du parcours bibliothèque, sans remplacer celles
+du laboratoire : `watchmind-l16-desktop.png` et `watchmind-l16-mobile.png`.

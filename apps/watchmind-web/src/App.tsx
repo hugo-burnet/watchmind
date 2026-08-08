@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { Button, StatePanel } from "./components/Primitives";
 import { TasteMap } from "./components/TasteMap";
+import { Library } from "./components/Library";
 
 const navItems = ["Aujourd’hui", "Bibliothèque", "Carte de goût", "Évaluation"];
 
 export function App() {
-  const [active, setActive] = useState("Carte de goût");
+  const [active, setActive] = useState("Bibliothèque");
 
   return (
     <div className="app-shell">
@@ -32,11 +33,12 @@ export function App() {
 
         <div className="sidebar__foot">
           <span className="sync-dot" />
-          <p><strong>Profil à jour</strong><small>12 œuvres · il y a 4 min</small></p>
+          <p><strong>Profil à jour</strong><small>API locale prête</small></p>
         </div>
       </aside>
 
       <main id="main" className="main-content">
+        {active === "Bibliothèque" ? <Library /> : <>
         <header className="page-header">
           <div>
             <p className="eyebrow">Laboratoire visuel / lot 15</p>
@@ -45,7 +47,7 @@ export function App() {
               Une lecture personnelle de vos goûts, dessinée à partir de ce que vous avez vraiment aimé.
             </p>
           </div>
-          <Button tone="quiet">Ajouter une œuvre <span aria-hidden="true">＋</span></Button>
+          <Button tone="quiet">Ajouter une œuvre <span aria-hidden="true">+</span></Button>
         </header>
 
         <TasteMap />
@@ -75,6 +77,7 @@ export function App() {
             </StatePanel>
           </div>
         </section>
+        </>}
       </main>
     </div>
   );

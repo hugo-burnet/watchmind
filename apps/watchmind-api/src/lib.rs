@@ -98,6 +98,7 @@ pub fn router(state: ApiState) -> Router {
     Router::new()
         .route("/api/anime/search", get(search_anime))
         .route("/api/works/{id}", get(read_work))
+        .route("/api/library", get(library))
         .route("/api/library/{id}", put(upsert_library))
         .route("/api/library/{id}/rating", put(upsert_rating))
         .route("/api/library/{id}/events", post(append_event))
@@ -145,6 +146,25 @@ struct CompleteWork {
     library: Option<LibraryEntry>,
     rating: Option<RatingRecord>,
     events: Vec<WatchEvent>,
+}
+
+async fn library(State(state): State<ApiState>) -> Result<Json<Vec<CompleteWork>>, ApiError> {
+    let mut result = Vec::new();
+    for entry in state.database.library().all().await? {
+        let work = state
+            .database
+            .works()
+            .get(entry.work_id)
+            .await?
+            .ok_or_else(|| ApiError::internal("library work is missing"))?;
+        result.push(CompleteWork {
+            work,
+            rating: state.database.ratings().get(entry.work_id).await?,
+            events: state.database.events().for_work(entry.work_id).await?,
+            library: Some(entry),
+        });
+    }
+    Ok(Json(result))
 }
 
 async fn read_work(
