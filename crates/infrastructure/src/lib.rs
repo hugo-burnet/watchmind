@@ -7,6 +7,7 @@ mod storage;
 
 pub use anilist::{AniListCatalog, AniListError, AniListNormalizer, CatalogCache, SearchResult};
 pub use storage::{
-    AspectRepository, Database, EventRepository, PreferenceRepository, RatingRepository,
-    StorageError, TagRepository, WorkRepository,
+    AspectRepository, Database, EventRepository, LibraryEntry, LibraryRepository,
+    PreferenceRepository, ProfileSnapshot, RatingRepository, SnapshotRepository, StorageError,
+    TagRepository, WorkRepository,
 };

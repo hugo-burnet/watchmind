@@ -69,3 +69,5 @@ de la CLI V1 et leurs contrats de sortie sont résumés dans
 Le client AniList, son cache déterministe, les migrations SQLite, repositories
 et sauvegardes sont décrits dans
 [`docs/catalog-and-storage.md`](docs/catalog-and-storage.md).
+L'API de bibliothèque, les recommandations versionnées et leur lancement sont
+décrits dans [`docs/http-api.md`](docs/http-api.md).

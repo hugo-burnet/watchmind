@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "apps/watchmind-api",
     "apps/watchmind-cli",
     "crates/infrastructure",
     "crates/recommendation",

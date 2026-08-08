@@ -88,6 +88,14 @@ impl Database {
     pub fn preferences(&self) -> PreferenceRepository {
         PreferenceRepository(self.pool.clone())
     }
+    #[must_use]
+    pub fn library(&self) -> LibraryRepository {
+        LibraryRepository(self.pool.clone())
+    }
+    #[must_use]
+    pub fn snapshots(&self) -> SnapshotRepository {
+        SnapshotRepository(self.pool.clone())
+    }
 
     /// Exporte toutes les données applicatives dans un JSON versionné.
     /// # Errors
@@ -138,6 +146,165 @@ impl Database {
         transaction.commit().await?;
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LibraryEntry {
+    pub work_id: WorkId,
+    pub comment: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct LibraryRepository(SqlitePool);
+impl LibraryRepository {
+    /// Ajoute l'œuvre à la bibliothèque ou remplace son commentaire.
+    /// # Errors
+    /// Retourne une erreur SQL, notamment si l'œuvre n'existe pas.
+    pub async fn upsert(&self, entry: &LibraryEntry) -> Result<(), StorageError> {
+        sqlx::query("INSERT INTO library(work_id, comment) VALUES (?, ?) ON CONFLICT(work_id) DO UPDATE SET comment = excluded.comment")
+            .bind(i64::from(entry.work_id.get()))
+            .bind(entry.comment.as_deref())
+            .execute(&self.0)
+            .await?;
+        Ok(())
+    }
+
+    /// # Errors
+    /// Retourne une erreur SQL.
+    pub async fn get(&self, id: WorkId) -> Result<Option<LibraryEntry>, StorageError> {
+        sqlx::query("SELECT comment FROM library WHERE work_id = ?")
+            .bind(i64::from(id.get()))
+            .fetch_optional(&self.0)
+            .await?
+            .map(|row| {
+                Ok(LibraryEntry {
+                    work_id: id,
+                    comment: row.try_get("comment")?,
+                })
+            })
+            .transpose()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProfileSnapshot {
+    pub version: i64,
+    pub created_at_unix: u64,
+    pub profile: serde_json::Value,
+}
+
+#[derive(Clone)]
+pub struct SnapshotRepository(SqlitePool);
+impl SnapshotRepository {
+    /// Persiste atomiquement une note, le profil recalculé et tous ses scores.
+    /// # Errors
+    /// Retourne une erreur sans modifier la note ni créer de snapshot partiel.
+    pub async fn create_for_rating(
+        &self,
+        rating: &RatingRecord,
+        created_at_unix: u64,
+        profile: &serde_json::Value,
+        scores: &[serde_json::Value],
+    ) -> Result<i64, StorageError> {
+        let timestamp = snapshot_timestamp(created_at_unix)?;
+        let mut tx = self.0.begin().await?;
+        upsert_rating(&mut tx, rating).await?;
+        let version = insert_snapshot(&mut tx, timestamp, profile, scores).await?;
+        tx.commit().await?;
+        Ok(version)
+    }
+
+    /// Persiste atomiquement un profil et tous ses scores explicables.
+    /// # Errors
+    /// Retourne une erreur SQL ou de sérialisation, sans snapshot partiel.
+    pub async fn create(
+        &self,
+        created_at_unix: u64,
+        profile: &serde_json::Value,
+        scores: &[serde_json::Value],
+    ) -> Result<i64, StorageError> {
+        let timestamp = snapshot_timestamp(created_at_unix)?;
+        let mut tx = self.0.begin().await?;
+        let version = insert_snapshot(&mut tx, timestamp, profile, scores).await?;
+        tx.commit().await?;
+        Ok(version)
+    }
+
+    /// # Errors
+    /// Retourne une erreur SQL ou si le JSON stocké est invalide.
+    pub async fn latest_profile(&self) -> Result<Option<ProfileSnapshot>, StorageError> {
+        let row = sqlx::query("SELECT version, created_at_unix, payload FROM profile_snapshots ORDER BY version DESC LIMIT 1")
+            .fetch_optional(&self.0).await?;
+        row.map(|value| snapshot_from_row(&value)).transpose()
+    }
+
+    /// # Errors
+    /// Retourne une erreur SQL ou si le JSON stocké est invalide.
+    pub async fn scores(&self, version: i64) -> Result<Vec<serde_json::Value>, StorageError> {
+        sqlx::query_scalar::<_, String>(
+            "SELECT payload FROM score_snapshots WHERE profile_version = ? ORDER BY rank",
+        )
+        .bind(version)
+        .fetch_all(&self.0)
+        .await?
+        .into_iter()
+        .map(|payload| serde_json::from_str(&payload).map_err(Into::into))
+        .collect()
+    }
+}
+
+fn snapshot_timestamp(created_at_unix: u64) -> Result<i64, StorageError> {
+    i64::try_from(created_at_unix).map_err(|_| {
+        DomainError::InvalidValue {
+            field: "created_at_unix",
+            reason: "must fit i64",
+        }
+        .into()
+    })
+}
+
+async fn insert_snapshot(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    timestamp: i64,
+    profile: &serde_json::Value,
+    scores: &[serde_json::Value],
+) -> Result<i64, StorageError> {
+    let result =
+        sqlx::query("INSERT INTO profile_snapshots(created_at_unix, payload) VALUES (?, ?)")
+            .bind(timestamp)
+            .bind(serde_json::to_string(profile)?)
+            .execute(&mut **tx)
+            .await?;
+    let version = result.last_insert_rowid();
+    for (index, score) in scores.iter().enumerate() {
+        let work_id = score
+            .get("work_id")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or(DomainError::InvalidValue {
+                field: "score.work_id",
+                reason: "must be an unsigned integer",
+            })?;
+        sqlx::query("INSERT INTO score_snapshots(profile_version, work_id, rank, payload) VALUES (?, ?, ?, ?)")
+            .bind(version)
+            .bind(i64::try_from(work_id).map_err(|_| DomainError::InvalidValue { field: "score.work_id", reason: "must fit i64" })?)
+            .bind(i64::try_from(index + 1).map_err(|_| DomainError::InvalidValue { field: "score.rank", reason: "must fit i64" })?)
+            .bind(serde_json::to_string(score)?)
+            .execute(&mut **tx)
+            .await?;
+    }
+    Ok(version)
+}
+
+fn snapshot_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<ProfileSnapshot, StorageError> {
+    let timestamp: i64 = row.try_get("created_at_unix")?;
+    Ok(ProfileSnapshot {
+        version: row.try_get("version")?,
+        created_at_unix: u64::try_from(timestamp).map_err(|_| DomainError::InvalidValue {
+            field: "created_at_unix",
+            reason: "must be non-negative",
+        })?,
+        profile: serde_json::from_str(&row.try_get::<String, _>("payload")?)?,
+    })
 }
 
 #[derive(Clone)]
