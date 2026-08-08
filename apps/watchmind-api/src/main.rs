@@ -1,6 +1,7 @@
 use std::{env, net::SocketAddr, path::PathBuf, time::Duration};
-use watchmind_api::{ApiState, secured_router};
+use watchmind_api::{ApiState, replace_with_dataset, secured_router};
 use watchmind_infrastructure::{AniListCatalog, CatalogCache, Database};
+use watchmind_recommendation::OfflineDataset;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -17,8 +18,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         return Ok(());
     }
+    if let [command, ratings_path, catalog_path] = arguments.as_slice()
+        && command == "import"
+    {
+        let ratings = std::fs::File::open(ratings_path)?;
+        let catalog = std::fs::File::open(catalog_path)?;
+        let dataset = OfflineDataset::import(ratings, catalog)?;
+        replace_with_dataset(&database, &dataset).await?;
+        return Ok(());
+    }
     if !arguments.is_empty() {
-        return Err("usage: watchmind-api [backup|restore <path>]".into());
+        return Err(
+            "usage: watchmind-api [backup|restore <path>|import <ratings.csv> <catalog.json>]"
+                .into(),
+        );
     }
     let catalog = AniListCatalog::new(CatalogCache::new(
         data.join("catalog-cache"),

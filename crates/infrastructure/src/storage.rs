@@ -6,8 +6,8 @@ use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
 };
 use watchmind_recommendation::{
-    AspectCredit, DomainError, DropProgress, NormalizedWork, PersonalAxis, Rating, RatingRecord,
-    WatchEvent, Weight, WorkId,
+    AspectCredit, DomainError, DropProgress, NormalizedWork, OfflineDataset, PersonalAxis, Rating,
+    RatingRecord, WatchEvent, Weight, WorkId,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -163,6 +163,39 @@ impl Database {
                 &snapshot.scores,
             )
             .await?;
+        }
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    /// Remplace atomiquement les données personnelles par un dataset offline.
+    /// # Errors
+    /// Annule toute la transaction si une donnée ne peut pas être persistée.
+    pub async fn replace_with_dataset(&self, dataset: &OfflineDataset) -> Result<(), StorageError> {
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query("DELETE FROM profile_snapshots")
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query("DELETE FROM preferences")
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query("DELETE FROM works")
+            .execute(&mut *transaction)
+            .await?;
+        for work in dataset.catalog() {
+            upsert_work(&mut transaction, work).await?;
+        }
+        for rating in dataset.ratings() {
+            upsert_rating(&mut transaction, rating).await?;
+        }
+        for event in dataset.events() {
+            insert_event(&mut transaction, event).await?;
+        }
+        for work in dataset.catalog() {
+            sqlx::query("INSERT INTO library(work_id, comment) VALUES (?, NULL)")
+                .bind(i64::from(work.id().get()))
+                .execute(&mut *transaction)
+                .await?;
         }
         transaction.commit().await?;
         Ok(())

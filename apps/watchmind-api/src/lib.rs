@@ -691,6 +691,29 @@ fn calculate_snapshot(dataset: &OfflineDataset) -> Result<(Value, Vec<Value>), A
     Ok((profile_json, score_json))
 }
 
+/// Remplace les données personnelles par un dataset et crée son profil initial.
+/// # Errors
+/// Retourne un diagnostic si l'import, le calcul ou la persistance échoue.
+pub async fn replace_with_dataset(
+    database: &Database,
+    dataset: &OfflineDataset,
+) -> Result<(), String> {
+    database
+        .replace_with_dataset(dataset)
+        .await
+        .map_err(|error| error.to_string())?;
+    let (profile, scores) = calculate_snapshot(dataset).map_err(|error| error.message)?;
+    let created_at_unix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |time| time.as_secs());
+    database
+        .snapshots()
+        .create(created_at_unix, &profile, &scores)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 async fn load_dataset(database: &Database) -> Result<OfflineDataset, ApiError> {
     let mut works = Vec::new();
     for entry in database.library().all().await? {
