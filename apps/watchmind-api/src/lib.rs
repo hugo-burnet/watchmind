@@ -21,12 +21,12 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use watchmind_infrastructure::{
-    AniListCatalog, Database, LibraryEntry, ProfileSnapshot, StorageError,
+    AniListCatalog, Database, Impression, LibraryEntry, ProfileSnapshot, StorageError,
 };
 use watchmind_recommendation::{
     AspectCredit, CandidateRequest, FullEvaluationConfig, OfflineDataset, Rating, RatingRecord,
-    RecommendationEngine, TasteProfileConfig, TemporalRating, WatchEvent, WorkId,
-    build_taste_profile, evaluate_full, evaluate_pipeline_with_request,
+    TasteProfileConfig, TemporalRating, WatchEvent, WorkId, build_taste_profile, evaluate_full,
+    evaluate_pipeline_with_request, rank_candidates_fused,
 };
 
 type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
@@ -34,6 +34,19 @@ type SearchFuture = Pin<Box<dyn Future<Output = Result<CatalogResponse, String>>
 type Search = Arc<dyn Fn(String, u32, u8, u64) -> SearchFuture + Send + Sync>;
 type Discover = Arc<dyn Fn(u32, u8, u64) -> SearchFuture + Send + Sync>;
 type TaggedDiscover = Arc<dyn Fn(String, u32, u8, u64) -> SearchFuture + Send + Sync>;
+type BandDiscover = Arc<dyn Fn(u8, u8, u32, u8, u64) -> SearchFuture + Send + Sync>;
+
+/// Tranches de note échantillonnées pour constituer le vivier de candidats.
+///
+/// Les requêtes de découverte trient par note décroissante : n'en prendre que
+/// les premières pages produit un vivier déjà classé par le critère auquel on
+/// compare ensuite le moteur, qui ne peut donc pas s'en distinguer. Couvrir
+/// aussi les tranches basses met dans le pool des œuvres que l'utilisateur
+/// rejetterait, ce qui redonne du sens au classement. Le filtrage qualité, s'il
+/// est souhaité, appartient à `CandidateRequest::minimum_global_score`, pas au
+/// retrieval.
+const DISCOVERY_BANDS: [(u8, u8); 5] = [(84, 101), (74, 85), (64, 75), (49, 65), (0, 50)];
+const DISCOVERY_BAND_PAGES: u32 = 2;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CatalogResponse {
@@ -55,6 +68,7 @@ pub struct ApiState {
     search: Search,
     discover: Discover,
     discover_by_tag: TaggedDiscover,
+    discover_in_band: BandDiscover,
     clock: Clock,
 }
 
@@ -77,6 +91,7 @@ impl ApiState {
         let catalog = Arc::new(catalog);
         let search_catalog = Arc::clone(&catalog);
         let discovery_catalog = Arc::clone(&catalog);
+        let band_catalog = Arc::clone(&catalog);
         Self {
             database,
             search: Arc::new(move |query, page, per_page, now| {
@@ -109,6 +124,16 @@ impl ApiState {
                         .map_err(|error| error.to_string())
                 })
             }),
+            discover_in_band: Arc::new(move |minimum, maximum, page, per_page, now| {
+                let catalog = Arc::clone(&band_catalog);
+                Box::pin(async move {
+                    catalog
+                        .discover_in_band(minimum, maximum, page, per_page, now)
+                        .await
+                        .map(|result| catalog_response(&result))
+                        .map_err(|error| error.to_string())
+                })
+            }),
             clock: Arc::new(clock),
         }
     }
@@ -126,6 +151,7 @@ impl ApiState {
         let search = Arc::new(search);
         let discovery = Arc::clone(&search);
         let tagged_discovery = Arc::clone(&search);
+        let band_discovery = Arc::clone(&search);
         Self {
             database,
             search: Arc::new(move |query, page, per_page, now| {
@@ -136,6 +162,14 @@ impl ApiState {
             }),
             discover_by_tag: Arc::new(move |tag, page, per_page, now| {
                 Box::pin(tagged_discovery(tag, page, per_page, now))
+            }),
+            discover_in_band: Arc::new(move |minimum, maximum, page, per_page, now| {
+                Box::pin(band_discovery(
+                    format!("__discover_band__:{minimum}:{maximum}"),
+                    page,
+                    per_page,
+                    now,
+                ))
             }),
             clock: Arc::new(clock),
         }
@@ -172,6 +206,7 @@ pub fn router(state: ApiState) -> Router {
             get(historical_recommendations),
         )
         .route("/api/evaluation", get(evaluation))
+        .route("/api/recommendations/impact", get(recommendation_impact))
         .route("/api/health", get(health))
         .route("/api/export", get(export_library))
         .route(
@@ -647,11 +682,44 @@ async fn recommendations(State(state): State<ApiState>) -> Result<Json<Value>, A
                 .await?
         }
     };
+    record_impressions(&state, version, &scores).await?;
     Ok(Json(json!({
         "profile_version": version,
         "catalog_manifest": manifest,
         "recommendations": scores
     })))
+}
+
+/// Nombre de recommandations de tête considérées comme réellement affichées.
+const IMPRESSION_DEPTH: usize = 10;
+
+/// Journalise ce qui part vers l'utilisateur.
+///
+/// On n'enregistre que la tête de liste : au-delà, l'utilisateur ne voit rien,
+/// et compter des recommandations invisibles fausserait toute mesure d'apport.
+async fn record_impressions(
+    state: &ApiState,
+    version: i64,
+    scores: &[Value],
+) -> Result<(), ApiError> {
+    let shown_at_unix = (state.clock)();
+    let impressions = scores
+        .iter()
+        .take(IMPRESSION_DEPTH)
+        .enumerate()
+        .filter_map(|(index, score)| {
+            let raw = u32::try_from(score.get("work_id")?.as_u64()?).ok()?;
+            Some(Impression {
+                work_id: WorkId::new(raw).ok()?,
+                profile_version: version,
+                shown_at_unix,
+                rank: u32::try_from(index + 1).ok()?,
+                global_score: score.get("global_score").and_then(Value::as_f64),
+            })
+        })
+        .collect::<Vec<_>>();
+    state.database.impressions().record(&impressions).await?;
+    Ok(())
 }
 
 async fn historical_recommendations(
@@ -667,6 +735,89 @@ async fn historical_recommendations(
     Ok(Json(
         json!({ "profile_version": version, "recommendations": scores }),
     ))
+}
+
+/// Mesure l'apport réel du moteur, à partir de ce qui a été affiché.
+///
+/// Le leave-one-out ne peut pas répondre à cette question : il oppose une œuvre
+/// que l'utilisateur a choisie et adorée à des œuvres qu'il n'a jamais touchées,
+/// si bien qu'un simple tri par notoriété gagne d'avance. Ici, on ne compte que
+/// les œuvres notées **après** avoir été recommandées.
+async fn recommendation_impact(State(state): State<ApiState>) -> Result<Json<Value>, ApiError> {
+    let impressions = state.database.impressions().all().await?;
+    let dataset = load_dataset(&state.database).await?;
+    let ratings = dataset
+        .ratings()
+        .iter()
+        .map(|rating| (rating.work_id(), rating))
+        .collect::<std::collections::HashMap<_, _>>();
+    let global = dataset
+        .catalog()
+        .iter()
+        .map(|work| (work.id(), work.global_score().map(Rating::get)))
+        .collect::<std::collections::HashMap<_, _>>();
+
+    let mut followed = Vec::new();
+    for impression in &impressions {
+        let Some(rating) = ratings.get(&impression.work_id) else {
+            continue;
+        };
+        // Seule une note posée après l'affichage atteste d'un visionnage
+        // déclenché par la recommandation.
+        if rating
+            .rated_at_unix()
+            .is_none_or(|rated_at| rated_at < impression.shown_at_unix)
+        {
+            continue;
+        }
+        let reference = global
+            .get(&impression.work_id)
+            .copied()
+            .flatten()
+            .or(impression.global_score);
+        followed.push((rating.rating().get(), reference));
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    let ratio = |count: usize, total: usize| {
+        if total == 0 {
+            Value::Null
+        } else {
+            json!(count as f64 / total as f64)
+        }
+    };
+    let liked = followed.iter().filter(|(rating, _)| *rating >= 8.0).count();
+    let above_global = followed
+        .iter()
+        .filter(|(rating, reference)| reference.is_some_and(|reference| *rating > reference))
+        .count();
+    #[allow(clippy::cast_precision_loss)]
+    let shown_mean_global = {
+        let scores = impressions
+            .iter()
+            .filter_map(|impression| impression.global_score)
+            .collect::<Vec<_>>();
+        if scores.is_empty() {
+            Value::Null
+        } else {
+            json!(scores.iter().sum::<f64>() / scores.len() as f64)
+        }
+    };
+
+    Ok(Json(json!({
+        "shown": impressions.len(),
+        "distinct_works": impressions
+            .iter()
+            .map(|impression| impression.work_id)
+            .collect::<HashSet<_>>()
+            .len(),
+        "watched_after_being_shown": followed.len(),
+        "liked": liked,
+        "precision": ratio(liked, followed.len()),
+        "above_global_score": above_global,
+        "discovery_precision": ratio(above_global, followed.len()),
+        "shown_mean_global_score": shown_mean_global
+    })))
 }
 
 async fn evaluation(State(state): State<ApiState>) -> Result<Json<Value>, ApiError> {
@@ -800,11 +951,24 @@ async fn discover_unseen(
         queries.push((Some(tag.as_str()), 1));
         queries.push((Some(tag.as_str()), 2));
     }
+
+    let mut responses = Vec::new();
     for (tag, page) in queries {
-        let response = match tag {
+        responses.push(match tag {
             Some(tag) => (state.discover_by_tag)(tag.to_owned(), page, 50, (state.clock)()).await,
             None => (state.discover)(page, 50, (state.clock)()).await,
-        };
+        });
+    }
+    // Échantillonnage par tranche de note : sans lui le vivier ne contient que
+    // le sommet du palmarès, et un tri par note mondiale y devient un oracle.
+    for (minimum, maximum) in DISCOVERY_BANDS {
+        for page in 1..=DISCOVERY_BAND_PAGES {
+            responses
+                .push((state.discover_in_band)(minimum, maximum, page, 50, (state.clock)()).await);
+        }
+    }
+
+    for response in responses {
         let response = match response {
             Ok(response) => response,
             Err(error) if works.is_empty() => return Err(error),
@@ -914,9 +1078,8 @@ fn calculate_snapshot(dataset: &OfflineDataset) -> Result<(Value, Vec<Value>), A
         .filter(|work| !rated.contains(&work.id()))
         .cloned()
         .collect::<Vec<_>>();
-    let scores = RecommendationEngine::default()
-        .score_candidates(&profile, &candidates)
-        .map_err(ApiError::internal)?;
+    let scores =
+        rank_candidates_fused(dataset, &profile, &candidates).map_err(ApiError::internal)?;
     let profile_json = serde_json::to_value(&profile).map_err(ApiError::internal)?;
     let score_json = scores
         .into_iter()

@@ -19,5 +19,7 @@ Le profil de goût, ses affinités de tags, ses pôles et ses priors sont
 documentés dans [`taste-profile.md`](taste-profile.md).
 La diversification MMR et les paris d'exploration sont documentés dans
 [`diversification.md`](diversification.md).
+La cascade multi-experts, son k-NN résiduel et ses mesures sont documentés dans
+[`rank-fusion.md`](rank-fusion.md).
 L'installation Docker, l'authentification, les sauvegardes et la reprise sont
 documentées dans [`self-hosting.md`](self-hosting.md).

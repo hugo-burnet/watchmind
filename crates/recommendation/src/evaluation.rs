@@ -1,6 +1,6 @@
 use std::{
     cmp::Ordering,
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     error::Error,
     fmt::{self, Write as _},
 };
@@ -125,7 +125,6 @@ pub struct EvaluationReport {
     cases: usize,
     baselines: Vec<BaselineResult>,
 }
-
 impl EvaluationReport {
     #[must_use]
     pub const fn cases(&self) -> usize {
@@ -246,7 +245,22 @@ fn evaluate_baselines_with(
 ) -> Result<EvaluationReport, EvaluationError> {
     let relevant_rating_threshold =
         effective_relevant_threshold(dataset, relevant_rating_threshold);
-    let cases = evaluation_cases(dataset, relevant_rating_threshold);
+    let targets = relevant_targets(
+        dataset,
+        RelevanceMode::Absolute,
+        relevant_rating_threshold,
+        0.0,
+    );
+    evaluate_baselines_on(dataset, &targets, relevant_rating_threshold, random_seed)
+}
+
+fn evaluate_baselines_on(
+    dataset: &OfflineDataset,
+    targets: &[WorkId],
+    relevant_rating_threshold: f64,
+    random_seed: u64,
+) -> Result<EvaluationReport, EvaluationError> {
+    let cases = evaluation_cases(dataset, targets);
     if cases.is_empty() {
         return Err(EvaluationError::NoRelevantRatings);
     }
@@ -277,21 +291,15 @@ struct EvaluationCase<'a> {
     candidates: Vec<&'a NormalizedWork>,
 }
 
-fn evaluation_cases(
-    dataset: &OfflineDataset,
-    relevant_rating_threshold: f64,
-) -> Vec<EvaluationCase<'_>> {
+fn evaluation_cases<'a>(
+    dataset: &'a OfflineDataset,
+    relevant_ids: &[WorkId],
+) -> Vec<EvaluationCase<'a>> {
     let rated_ids = dataset
         .ratings()
         .iter()
         .map(crate::RatingRecord::work_id)
         .collect::<HashSet<_>>();
-    let relevant_ids = dataset
-        .ratings()
-        .iter()
-        .filter(|rating| rating.rating().get() >= relevant_rating_threshold)
-        .map(crate::RatingRecord::work_id)
-        .collect::<Vec<_>>();
 
     relevant_ids
         .iter()
@@ -525,6 +533,26 @@ impl TemporalRating {
     }
 }
 
+/// Définition de ce qui compte comme une cible pertinente.
+///
+/// `Absolute` retient les notes hautes dans l'absolu. C'est le réglage
+/// historique, et il a un défaut mesuré : sur un catalogue d'œuvres acclamées,
+/// ces cibles sont précisément celles qu'un simple tri par note mondiale trouve
+/// sans rien connaître de l'utilisateur. Le harnais récompense alors la
+/// notoriété plutôt que la personnalisation.
+///
+/// `Residual` retient les œuvres notées **au-dessus de leur note mondiale**.
+/// Ce sont, par construction, celles qu'un classement par popularité ne peut
+/// pas trouver : la question devient « m'a-t-on fait découvrir quelque chose
+/// que je n'aurais pas trouvé seul ».
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RelevanceMode {
+    #[default]
+    Absolute,
+    Residual,
+}
+
 /// Configuration versionnee du rapport moteur V1.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -532,6 +560,8 @@ pub struct FullEvaluationConfig {
     profile_version: String,
     seed: u64,
     relevant_rating_threshold: f64,
+    relevance_mode: RelevanceMode,
+    residual_threshold: f64,
     minimum_temporal_history: usize,
     thresholds: EvaluationThresholds,
     regression_pairs: Vec<RegressionPair>,
@@ -544,6 +574,8 @@ impl Default for FullEvaluationConfig {
             profile_version: "taste-profile-v1".to_owned(),
             seed: RANDOM_SEED,
             relevant_rating_threshold: RELEVANT_RATING_THRESHOLD,
+            relevance_mode: RelevanceMode::Absolute,
+            residual_threshold: 0.0,
             minimum_temporal_history: 1,
             thresholds: EvaluationThresholds::default(),
             regression_pairs: Vec::new(),
@@ -557,6 +589,76 @@ impl FullEvaluationConfig {
     pub fn with_temporal_ratings(mut self, temporal_ratings: Vec<TemporalRating>) -> Self {
         self.temporal_ratings = temporal_ratings;
         self
+    }
+
+    /// Bascule la définition de la pertinence.
+    #[must_use]
+    pub const fn with_relevance_mode(mut self, relevance_mode: RelevanceMode) -> Self {
+        self.relevance_mode = relevance_mode;
+        self
+    }
+
+    /// Écart minimal à la note mondiale en mode [`RelevanceMode::Residual`].
+    #[must_use]
+    pub const fn with_residual_threshold(mut self, residual_threshold: f64) -> Self {
+        self.residual_threshold = residual_threshold;
+        self
+    }
+
+    #[must_use]
+    pub const fn relevance_mode(&self) -> RelevanceMode {
+        self.relevance_mode
+    }
+}
+
+/// Note mondiale de repli quand le catalogue n'en expose pas.
+const DEFAULT_GLOBAL_SCORE: f64 = 7.0;
+
+/// Sélectionne les cibles pertinentes selon le mode demandé.
+///
+/// Les baselines et le moteur doivent impérativement partager cette sélection :
+/// comparer deux rankers sur deux ensembles de cibles différents ne mesure rien.
+fn relevant_targets(
+    dataset: &OfflineDataset,
+    mode: RelevanceMode,
+    absolute_threshold: f64,
+    residual_threshold: f64,
+) -> Vec<WorkId> {
+    match mode {
+        RelevanceMode::Absolute => {
+            let threshold = effective_relevant_threshold(dataset, absolute_threshold);
+            dataset
+                .ratings()
+                .iter()
+                .filter(|rating| rating.rating().get() >= threshold)
+                .map(crate::RatingRecord::work_id)
+                .collect()
+        }
+        RelevanceMode::Residual => {
+            let global = dataset
+                .catalog()
+                .iter()
+                .map(|work| {
+                    (
+                        work.id(),
+                        work.global_score()
+                            .map_or(DEFAULT_GLOBAL_SCORE, crate::Rating::get),
+                    )
+                })
+                .collect::<HashMap<_, _>>();
+            dataset
+                .ratings()
+                .iter()
+                .filter(|rating| {
+                    let reference = global
+                        .get(&rating.work_id())
+                        .copied()
+                        .unwrap_or(DEFAULT_GLOBAL_SCORE);
+                    rating.rating().get() - reference > residual_threshold
+                })
+                .map(crate::RatingRecord::work_id)
+                .collect()
+        }
     }
 }
 
@@ -808,12 +910,12 @@ pub fn evaluate_full(
     config: &FullEvaluationConfig,
 ) -> Result<FullEvaluationReport, FullEvaluationError> {
     validate_full_config(dataset, config)?;
-    let relevant_ids = dataset
-        .ratings()
-        .iter()
-        .filter(|rating| rating.rating().get() >= config.relevant_rating_threshold)
-        .map(crate::RatingRecord::work_id)
-        .collect::<Vec<_>>();
+    let relevant_ids = relevant_targets(
+        dataset,
+        config.relevance_mode,
+        config.relevant_rating_threshold,
+        config.residual_threshold,
+    );
     if relevant_ids.is_empty() {
         return Err(FullEvaluationError::NoRelevantRatings);
     }
@@ -828,8 +930,15 @@ pub fn evaluate_full(
         target_ranks: engine_ranks,
     };
     let pipeline = evaluate_pipeline(dataset, &relevant_ids)?;
-    let baselines = evaluate_baselines_with(dataset, config.relevant_rating_threshold, config.seed)
-        .map_err(|_| FullEvaluationError::NoRelevantRatings)?;
+    // Les baselines partagent exactement les cibles du moteur : sans cela, le
+    // verdict comparerait deux rankers sur deux ensembles différents.
+    let baselines = evaluate_baselines_on(
+        dataset,
+        &relevant_ids,
+        config.relevant_rating_threshold,
+        config.seed,
+    )
+    .map_err(|_| FullEvaluationError::NoRelevantRatings)?;
     let regressions = evaluate_regressions(dataset, config)?;
     let temporal_backtest = evaluate_temporal(dataset, config)?;
     let Some(tag_metrics) = baselines
@@ -1062,7 +1171,6 @@ fn evaluate_pipeline_with(
     request: &crate::CandidateRequest,
 ) -> Result<PipelineEvaluation, FullEvaluationError> {
     let engine = RecommendationEngine::default();
-    let diversification = crate::DiversificationConfig::default();
     let mut retrieved = 0;
     let mut listed = 0;
 
@@ -1074,16 +1182,11 @@ fn evaluate_pipeline_with(
             continue;
         }
         retrieved += 1;
-        let list = engine
-            .recommend(&profile, &candidates, &diversification)
-            .map_err(|error| FullEvaluationError::InvalidConfiguration {
-                field: "diversification",
-                reason: error.to_string(),
-            })?;
-        if list
-            .recommendations()
+        let ranking = crate::rank_candidates_fused(&training, &profile, candidates.works())?;
+        if ranking
             .iter()
-            .any(|recommendation| recommendation.scored().work_id() == *target)
+            .take(10)
+            .any(|recommendation| recommendation.work_id() == *target)
         {
             listed += 1;
         }
@@ -1149,7 +1252,7 @@ fn rank_hidden_target(
         .filter(|work| !rated_ids.contains(&work.id()))
         .cloned()
         .collect::<Vec<_>>();
-    let ranking = RecommendationEngine::default().score_candidates(&profile, &candidates)?;
+    let ranking = crate::rank_candidates_fused(&training, &profile, &candidates)?;
     let position = ranking
         .iter()
         .position(|recommendation| recommendation.work_id() == target)

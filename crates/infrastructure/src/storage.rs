@@ -96,6 +96,10 @@ impl Database {
     pub fn snapshots(&self) -> SnapshotRepository {
         SnapshotRepository(self.pool.clone())
     }
+    #[must_use]
+    pub fn impressions(&self) -> ImpressionRepository {
+        ImpressionRepository(self.pool.clone())
+    }
 
     /// Exporte toutes les données applicatives dans un JSON versionné.
     /// # Errors
@@ -242,6 +246,90 @@ impl Database {
 pub struct LibraryEntry {
     pub work_id: WorkId,
     pub comment: Option<String>,
+}
+
+/// Une recommandation effectivement affichée, avec son rang et la note mondiale
+/// de l'œuvre au moment de l'affichage.
+#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Impression {
+    pub work_id: WorkId,
+    pub profile_version: i64,
+    pub shown_at_unix: u64,
+    pub rank: u32,
+    pub global_score: Option<f64>,
+}
+
+/// Journal des recommandations affichées.
+///
+/// Sans cette trace, il est impossible de distinguer une œuvre que
+/// l'utilisateur a regardée *grâce* au moteur d'une œuvre qu'il aurait trouvée
+/// de toute façon — et c'est exactement la seule question qui compte.
+pub struct ImpressionRepository(SqlitePool);
+impl ImpressionRepository {
+    /// Enregistre les recommandations affichées pour une version de profil.
+    /// La clé primaire garantit qu'un réaffichage ne duplique pas la trace.
+    /// # Errors
+    /// Retourne une erreur SQL, notamment si une œuvre n'existe pas.
+    pub async fn record(&self, impressions: &[Impression]) -> Result<(), StorageError> {
+        let mut transaction = self.0.begin().await?;
+        for impression in impressions {
+            sqlx::query(
+                "INSERT INTO recommendation_impressions(work_id, profile_version, shown_at_unix, rank, global_score) \
+                 VALUES (?, ?, ?, ?, ?) ON CONFLICT(work_id, profile_version) DO NOTHING",
+            )
+            .bind(i64::from(impression.work_id.get()))
+            .bind(impression.profile_version)
+            .bind(i64::try_from(impression.shown_at_unix).map_err(|_| DomainError::InvalidValue {
+                field: "impression.shown_at_unix",
+                reason: "must fit i64",
+            })?)
+            .bind(i64::from(impression.rank))
+            .bind(impression.global_score)
+            .execute(&mut *transaction)
+            .await?;
+        }
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    /// Liste les impressions, de la plus ancienne à la plus récente.
+    /// # Errors
+    /// Retourne une erreur SQL.
+    pub async fn all(&self) -> Result<Vec<Impression>, StorageError> {
+        sqlx::query(
+            "SELECT work_id, profile_version, shown_at_unix, rank, global_score \
+             FROM recommendation_impressions ORDER BY shown_at_unix, rank, work_id",
+        )
+        .fetch_all(&self.0)
+        .await?
+        .into_iter()
+        .map(|row| {
+            let work_id: i64 = row.try_get("work_id")?;
+            let shown_at_unix: i64 = row.try_get("shown_at_unix")?;
+            let rank: i64 = row.try_get("rank")?;
+            Ok(Impression {
+                work_id: WorkId::new(u32::try_from(work_id).map_err(|_| {
+                    DomainError::InvalidValue {
+                        field: "impression.work_id",
+                        reason: "must fit u32",
+                    }
+                })?)?,
+                profile_version: row.try_get("profile_version")?,
+                shown_at_unix: u64::try_from(shown_at_unix).map_err(|_| {
+                    DomainError::InvalidValue {
+                        field: "impression.shown_at_unix",
+                        reason: "must be non-negative",
+                    }
+                })?,
+                rank: u32::try_from(rank).map_err(|_| DomainError::InvalidValue {
+                    field: "impression.rank",
+                    reason: "must fit u32",
+                })?,
+                global_score: row.try_get("global_score")?,
+            })
+        })
+        .collect()
+    }
 }
 
 #[derive(Clone)]

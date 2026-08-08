@@ -8,6 +8,7 @@ mod candidates;
 mod diversification;
 mod domain;
 mod evaluation;
+mod fusion;
 mod import;
 mod profile;
 mod scoring;
@@ -31,9 +32,11 @@ pub use domain::{
 pub use evaluation::{
     BaselineKind, BaselineResult, EvaluationError, EvaluationMetrics, EvaluationReport,
     EvaluationThresholds, FullEvaluationConfig, FullEvaluationError, FullEvaluationReport,
-    PipelineEvaluation, RegressionPair, RegressionResult, TargetRank, TemporalBacktest,
-    TemporalRating, evaluate_baselines, evaluate_full, evaluate_pipeline_with_request,
+    PipelineEvaluation, RegressionPair, RegressionResult, RelevanceMode, TargetRank,
+    TemporalBacktest, TemporalRating, evaluate_baselines, evaluate_full,
+    evaluate_pipeline_with_request,
 };
+pub use fusion::rank_candidates_fused;
 pub use import::{DatasetError, ImportError, ImportSummary, OfflineDataset};
 pub use profile::{
     AxisProfile, AxisWeight, AxisWeightSource, PoleTag, ProfileError, ProfileMode, TagAffinity,

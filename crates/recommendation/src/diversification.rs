@@ -639,6 +639,51 @@ fn select_kind(
     }
 }
 
+/// Fait remonter en tête d'un classement existant des œuvres qui respectent les
+/// plafonds de franchise, de studio et de tag dominant.
+///
+/// La sélection complète de [`RecommendationEngine::recommend`] rescore les
+/// candidats et impose sa propre taille, ce qui ne convient pas à un classement
+/// déjà produit par la fusion de rangs. Sans ce passage, les plafonds ne
+/// s'appliquent nulle part sur le chemin réellement servi : une tête de liste
+/// peut alors contenir trois saisons de la même franchise, c'est-à-dire trois
+/// fois moins de recommandations utiles qu'annoncé.
+///
+/// Les œuvres écartées de la tête ne sont jamais perdues : elles reprennent leur
+/// ordre de fusion juste en dessous.
+pub(crate) fn diversify_head(
+    ranked: Vec<ScoredRecommendation>,
+    works: &[NormalizedWork],
+    config: &DiversificationConfig,
+) -> Vec<ScoredRecommendation> {
+    let head_size = config.safe_count.saturating_add(config.exploration_count);
+    if head_size == 0 || ranked.len() <= 1 {
+        return ranked;
+    }
+    let works = works
+        .iter()
+        .map(|work| (work.id(), work))
+        .collect::<HashMap<_, _>>();
+
+    let mut limits = LimitState::default();
+    let mut head = Vec::with_capacity(head_size.min(ranked.len()));
+    let mut deferred = Vec::new();
+    for recommendation in ranked {
+        let Some(work) = works.get(&recommendation.work_id()) else {
+            deferred.push(recommendation);
+            continue;
+        };
+        if head.len() < head_size && limits.allows(work, config) {
+            limits.add(work, config);
+            head.push(recommendation);
+        } else {
+            deferred.push(recommendation);
+        }
+    }
+    head.extend(deferred);
+    head
+}
+
 /// Vérifie qu'une combinaison de `needed` candidats respecte tous les plafonds.
 ///
 /// Deux élagages évitent d'explorer inutilement : la taille restante, et le

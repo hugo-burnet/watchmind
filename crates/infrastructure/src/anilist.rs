@@ -29,6 +29,23 @@ const DISCOVER_QUERY: &str = r"query DiscoverAnime($page: Int!, $perPage: Int!) 
   }
 }";
 
+/// Découverte bornée par tranche de score.
+///
+/// Les deux requêtes ci-dessus trient par note décroissante : leurs premières
+/// pages ne contiennent donc que le sommet du palmarès mondial. Constituer un
+/// vivier de candidats uniquement avec elles revient à trier le terrain par le
+/// critère auquel on compare ensuite le moteur — il ne peut pas s'en distinguer.
+/// Les bornes de score permettent d'échantillonner toute la distribution, y
+/// compris des œuvres que l'utilisateur rejetterait.
+const DISCOVER_BAND_QUERY: &str = r"query DiscoverAnimeInBand($minimum: Int!, $maximum: Int!, $page: Int!, $perPage: Int!) {
+  Page(page: $page, perPage: $perPage) {
+    media(type: ANIME, averageScore_greater: $minimum, averageScore_lesser: $maximum, sort: [POPULARITY_DESC], status: FINISHED) {
+      id title { userPreferred romaji english native } averageScore duration episodes format
+      startDate { year } tags { name rank isMediaSpoiler } studios(isMain: true) { nodes { name } }
+    }
+  }
+}";
+
 const DISCOVER_TAG_QUERY: &str = r"query DiscoverAnimeByTag($tag: String!, $page: Int!, $perPage: Int!) {
   Page(page: $page, perPage: $perPage) {
     media(type: ANIME, tag: $tag, sort: [SCORE_DESC, POPULARITY_DESC], status: FINISHED) {
@@ -255,6 +272,61 @@ impl AniListCatalog {
         })
     }
 
+    /// Charge une page d'œuvres dont la note moyenne tombe dans `]minimum, maximum[`,
+    /// classées par popularité.
+    ///
+    /// Sert à échantillonner toute la distribution de qualité plutôt que son
+    /// sommet, afin qu'un vivier de candidats ne soit pas déjà trié par le
+    /// critère auquel on compare le moteur.
+    ///
+    /// # Errors
+    /// Retourne les erreurs réseau, cache, JSON ou de normalisation.
+    pub async fn discover_in_band(
+        &self,
+        minimum: u8,
+        maximum: u8,
+        page: u32,
+        per_page: u8,
+        now_unix: u64,
+    ) -> Result<SearchResult, AniListError> {
+        let per_page = per_page.clamp(1, 50);
+        let page = page.max(1);
+        let key = self.cache.path_for(
+            &format!("__discover_band__:{minimum}:{maximum}"),
+            page,
+            per_page,
+        );
+        if let Some(payload) = self.cache.read(&key, now_unix).await? {
+            return Ok(SearchResult {
+                works: AniListNormalizer::normalize(&payload)?,
+                from_cache: true,
+            });
+        }
+        let payload = self
+            .client
+            .post(&self.endpoint)
+            .json(&DiscoverBandGraphQlRequest {
+                query: DISCOVER_BAND_QUERY,
+                variables: DiscoverBandVariables {
+                    minimum,
+                    maximum,
+                    page,
+                    per_page,
+                },
+            })
+            .send()
+            .await?
+            .error_for_status()?
+            .text()
+            .await?;
+        let works = AniListNormalizer::normalize(&payload)?;
+        self.cache.write(&key, now_unix, &payload).await?;
+        Ok(SearchResult {
+            works,
+            from_cache: false,
+        })
+    }
+
     /// Charge une page `AniList` portant un tag précis. Cette requête permet de
     /// construire un pool à la demande sans répliquer le catalogue `AniList`.
     /// # Errors
@@ -382,6 +454,19 @@ struct DiscoverTagGraphQlRequest<'a> {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DiscoverVariables {
+    page: u32,
+    per_page: u8,
+}
+#[derive(Serialize)]
+struct DiscoverBandGraphQlRequest {
+    query: &'static str,
+    variables: DiscoverBandVariables,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DiscoverBandVariables {
+    minimum: u8,
+    maximum: u8,
     page: u32,
     per_page: u8,
 }

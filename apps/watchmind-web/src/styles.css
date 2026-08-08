@@ -1,6 +1,7 @@
 :root {
   color-scheme: light;
   --ink: #25243a;
+  --nav: #25243a;
   --ink-soft: #53546b;
   --paper: #f7f8fc;
   --mist: #e9edf6;
@@ -242,7 +243,8 @@ h1 { max-width: 12ch; font-size: clamp(3.1rem, 7vw, 6.8rem); font-weight: 650; l
 .recommendation-route { display: grid; grid-template-rows: auto 1fr auto; justify-items: center; color: var(--violet); font: 700 .62rem/1 var(--font-utility); }
 .recommendation-route i { width: 1px; min-height: 5rem; margin: .5rem 0; background: repeating-linear-gradient(to bottom, var(--violet) 0 4px, transparent 4px 9px); }
 .recommendation-route b { width: .8rem; height: .8rem; border: 2px solid var(--coral); background: var(--paper); transform: rotate(45deg); }
-.recommendation-main h3 { font-size: clamp(2rem, 4vw, 3.6rem); line-height: .9; text-transform: uppercase; }
+.recommendation-main { min-width: 0; }
+.recommendation-main h3 { max-width: 100%; font-size: clamp(2rem, 4vw, 3.6rem); line-height: .9; overflow-wrap: anywhere; text-wrap: balance; text-transform: uppercase; }
 .reason-list { display: grid; gap: .45rem; margin: 1.2rem 0; padding: 0; list-style: none; }
 .reason-list li { display: flex; align-items: baseline; gap: .65rem; color: var(--ink-soft); font-size: .9rem; }
 .reason-list li span { color: var(--violet); font: 700 .58rem/1 var(--font-utility); }
@@ -256,7 +258,8 @@ h1 { max-width: 12ch; font-size: clamp(3.1rem, 7vw, 6.8rem); font-weight: 650; l
 .feedback button[aria-pressed="true"] { color: var(--white); background: var(--cyan); }
 .bet-section { margin-top: var(--space-6); }
 .bet-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: var(--space-3); }
-.recommendation-card.is-bet { grid-template-columns: 3rem 1fr; padding: var(--space-3); border: 1px solid var(--line); background: var(--white); }
+.recommendation-card.is-bet { grid-template-columns: 3rem minmax(0, 1fr); padding: var(--space-3); border: 1px solid var(--line); background: var(--white); }
+.recommendation-card.is-bet .recommendation-main h3 { font-size: clamp(1.8rem, 3vw, 3rem); }
 .recommendation-card.is-bet .feedback { grid-column: 2; }
 
 .profile-confidence strong { font: 650 1.65rem/1 var(--font-display); text-transform: uppercase; }
