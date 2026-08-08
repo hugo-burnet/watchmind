@@ -21,10 +21,14 @@ scripts/check.ps1         contrôles qualité du workspace
 ```powershell
 cargo run -p watchmind-cli
 cargo run -p watchmind-cli -- import-csv fixtures/synthetic/ratings.csv --catalog fixtures/synthetic/catalog.json
+cargo run -p watchmind-cli -- build-profile fixtures/synthetic/ratings.csv --catalog fixtures/synthetic/catalog.json --json
+cargo run -p watchmind-cli -- show-poles fixtures/synthetic/ratings.csv --catalog fixtures/synthetic/catalog.json
+cargo run -p watchmind-cli -- recommend fixtures/synthetic/ratings.csv --catalog fixtures/synthetic/catalog.json
+cargo run -p watchmind-cli -- explain 5 fixtures/synthetic/ratings.csv --catalog fixtures/synthetic/catalog.json
+cargo run -p watchmind-cli -- evaluate fixtures/synthetic/ratings.csv --catalog fixtures/synthetic/catalog.json --config fixtures/config/evaluation-v1.json
+cargo run -p watchmind-cli -- leave-one-out fixtures/synthetic/ratings.csv --catalog fixtures/synthetic/catalog.json
 cargo run -p watchmind-cli -- compare-baselines fixtures/synthetic/ratings.csv --catalog fixtures/synthetic/catalog.json
 cargo run -p watchmind-cli -- compare-baselines fixtures/synthetic/ratings.csv --catalog fixtures/synthetic/catalog.json --json
-cargo run -p watchmind-cli -- recommend fixtures/synthetic/ratings.csv --catalog fixtures/synthetic/catalog.json
-cargo run -p watchmind-cli -- recommend fixtures/synthetic/ratings.csv --catalog fixtures/synthetic/catalog.json --json
 cargo test --workspace
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
@@ -49,3 +53,7 @@ Les filtres de retrieval, leur ordre et leur rapport sont décrits dans
 [`docs/candidate-generation.md`](docs/candidate-generation.md).
 La diversification MMR, les plafonds et les paris d'exploration sont décrits
 dans [`docs/diversification.md`](docs/diversification.md).
+L'évaluation complète et le verrou configurable du moteur sont décrits dans
+[`docs/complete-evaluation.md`](docs/complete-evaluation.md). Les huit commandes
+de la CLI V1 et leurs contrats de sortie sont résumés dans
+[`docs/cli-v1.md`](docs/cli-v1.md).
