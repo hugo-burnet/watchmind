@@ -21,6 +21,8 @@ export function Library() {
   const [results, setResults] = useState<Work[]>([]);
   const [searching, setSearching] = useState(false);
   const [selected, setSelected] = useState<CompleteWork | null>(null);
+  const [confirmingRemoval, setConfirmingRemoval] = useState<number | null>(null);
+  const [removing, setRemoving] = useState<number | null>(null);
 
   async function load() {
     setLoading(true); setError("");
@@ -44,6 +46,13 @@ export function Library() {
     setError("");
     try { await api.add(work); setResults((current) => current.filter((item) => item.id !== work.id)); await load(); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "Ajout impossible."); }
+  }
+
+  async function remove(entry: CompleteWork) {
+    setRemoving(entry.work.id); setError("");
+    try { await api.remove(entry.work.id); setConfirmingRemoval(null); await load(); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "Suppression impossible."); }
+    finally { setRemoving(null); }
   }
 
   const visible = useMemo(() => entries.filter((entry) => {
@@ -91,18 +100,21 @@ export function Library() {
       </header>
       {loading ? <div className="state-grid single"><StatePanel eyebrow="Bibliothèque" title="Les œuvres arrivent." busy>Lecture de votre collection locale.</StatePanel></div>
       : visible.length === 0 ? <div className="state-grid single"><StatePanel eyebrow="Aucun résultat" title="Ce rayon est encore vide.">Recherchez une œuvre ou choisissez un autre filtre.</StatePanel></div>
-      : <div className="work-grid">{visible.map((entry, index) => <button className="work-card" key={entry.work.id} onClick={() => setSelected(entry)}>
-          <span className="work-card__index">{String(index + 1).padStart(2, "0")}</span>
-          <span className="work-card__body"><small>{meta(entry.work) || "Œuvre AniList"}</small><strong>{entry.work.title}</strong>
-            <span className="tag-row">{entry.work.tags.slice(0, 2).map((tag) => <i key={tag.name}>{tag.name}</i>)}</span></span>
-          <span className={entry.rating ? "personal-rating" : "personal-rating is-empty"}>{entry.rating ? <><b>{entry.rating.rating}</b>/10</> : "À noter"}</span>
-        </button>)}</div>}
+      : <div className="work-grid">{visible.map((entry, index) => <article className="work-card" key={entry.work.id}>
+          <button className="work-card__open" onClick={() => setSelected(entry)} aria-label={`Ouvrir la fiche de ${entry.work.title}`}>
+            <span className="work-card__index">{String(index + 1).padStart(2, "0")}</span>
+            <span className="work-card__body"><small>{meta(entry.work) || "Œuvre AniList"}</small><strong>{entry.work.title}</strong>
+              <span className="tag-row">{entry.work.tags.slice(0, 2).map((tag) => <i key={tag.name}>{tag.name}</i>)}</span></span>
+            <span className={entry.rating ? "personal-rating" : "personal-rating is-empty"}>{entry.rating ? <><b>{entry.rating.rating}</b>/10</> : "À noter"}</span>
+          </button>
+          <div className="card-removal">{confirmingRemoval === entry.work.id ? <><span>Retirer cette œuvre et ses données actives ?</span><button onClick={() => void remove(entry)} disabled={removing === entry.work.id}>{removing === entry.work.id ? "Suppression…" : "Confirmer"}</button><button onClick={() => setConfirmingRemoval(null)}>Annuler</button></> : <button onClick={() => setConfirmingRemoval(entry.work.id)} aria-label={`Supprimer ${entry.work.title} de la bibliothèque`}>Supprimer</button>}</div>
+        </article>)}</div>}
     </section>
-    {selected && <WorkSheet entry={selected} onClose={() => setSelected(null)} onSaved={async () => { await load(); setSelected(null); }} />}
+    {selected && <WorkSheet entry={selected} onClose={() => setSelected(null)} onRefresh={load} onSaved={async () => { await load(); setSelected(null); }} />}
   </>;
 }
 
-function WorkSheet({ entry, onClose, onSaved }: { entry: CompleteWork; onClose: () => void; onSaved: () => Promise<void> }) {
+function WorkSheet({ entry, onClose, onRefresh, onSaved }: { entry: CompleteWork; onClose: () => void; onRefresh: () => Promise<void>; onSaved: () => Promise<void> }) {
   const [rating, setRating] = useState(entry.rating?.rating ?? 7);
   const [aspects, setAspects] = useState<string[]>(entry.rating?.aspects.map((item) => item.axis) ?? []);
   const [comment, setComment] = useState(entry.library?.comment ?? "");
@@ -112,6 +124,9 @@ function WorkSheet({ entry, onClose, onSaved }: { entry: CompleteWork; onClose: 
   const [total, setTotal] = useState(dropped?.progress?.total ?? 12);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [rewatchCount, setRewatchCount] = useState(entry.events.filter((event) => event.kind === "rewatched").length);
+  const [rewatching, setRewatching] = useState(false);
+  const [message, setMessage] = useState("");
 
   function toggleAspect(axis: string) { setAspects((current) => current.includes(axis) ? current.filter((item) => item !== axis) : current.length < 2 ? [...current, axis] : current); }
   async function save() {
@@ -124,6 +139,16 @@ function WorkSheet({ entry, onClose, onSaved }: { entry: CompleteWork; onClose: 
       await onSaved();
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Enregistrement impossible."); }
     finally { setSaving(false); }
+  }
+  async function addRewatch() {
+    setRewatching(true); setError(""); setMessage("");
+    try {
+      await api.event(entry.work.id, { kind: "rewatched", work_id: entry.work.id });
+      setRewatchCount((count) => count + 1);
+      setMessage("Rewatch enregistré.");
+      await onRefresh();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Rewatch impossible."); }
+    finally { setRewatching(false); }
   }
 
   return <div className="sheet-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }} onKeyDown={(event) => { if (event.key === "Escape") onClose(); }}>
@@ -138,8 +163,10 @@ function WorkSheet({ entry, onClose, onSaved }: { entry: CompleteWork; onClose: 
       <fieldset className="rating-field"><legend>Votre note</legend><div><input type="range" min="0" max="10" step="0.5" value={rating} onChange={(event) => setRating(Number(event.target.value))} aria-valuetext={`${rating} sur 10`} /><output>{rating}<small>/10</small></output></div></fieldset>
       <fieldset><legend>Ce qui a compté <small>2 maximum</small></legend><div className="aspect-chips">{aspectOptions.map(([axis, label]) => <button type="button" key={axis} aria-pressed={aspects.includes(axis)} onClick={() => toggleAspect(axis)} disabled={!aspects.includes(axis) && aspects.length >= 2}>{label}</button>)}</div></fieldset>
       <label className="comment-field">Une phrase pour vous, si utile<textarea rows={3} maxLength={240} value={comment} onChange={(event) => setComment(event.target.value)} placeholder="Ce que vous voudrez vous rappeler…" /></label>
+      {rewatchCount > 0 && <p className="rewatch-count">Revu {rewatchCount} fois</p>}
+      {message && <p className="form-success" role="status">{message}</p>}
       {error && <p className="form-error" role="alert">{error}</p>}
-      <div className="sheet-actions"><Button tone="quiet" onClick={() => void api.event(entry.work.id, { kind: "rewatched", work_id: entry.work.id })}>Marquer un rewatch</Button><Button onClick={() => void save()} disabled={saving}>{saving ? "Enregistrement…" : "Enregistrer"}</Button></div>
+      <div className="sheet-actions"><Button tone="quiet" onClick={() => void addRewatch()} disabled={rewatching}>{rewatching ? "Enregistrement…" : "Marquer un rewatch"}</Button><Button onClick={() => void save()} disabled={saving}>{saving ? "Enregistrement…" : "Enregistrer"}</Button></div>
     </section>
   </div>;
 }

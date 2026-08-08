@@ -1,6 +1,6 @@
 use serde_json::json;
 use tempfile::tempdir;
-use watchmind_infrastructure::Database;
+use watchmind_infrastructure::{Database, LibraryEntry};
 use watchmind_recommendation::{
     AspectCredit, DropProgress, NormalizedWork, PersonalAxis, Rating, RatingRecord, TagWeight,
     WatchEvent, Weight, WorkId,
@@ -68,6 +68,19 @@ async fn exports_and_restores_a_database() {
         .append(&WatchEvent::completed(work.id()))
         .await
         .unwrap();
+    source
+        .library()
+        .upsert(&LibraryEntry {
+            work_id: work.id(),
+            comment: Some("Repère".to_owned()),
+        })
+        .await
+        .unwrap();
+    source
+        .snapshots()
+        .create(1_700_000_000, &json!({"history_size": 1}), &[])
+        .await
+        .unwrap();
     source.export(&backup).await.unwrap();
 
     let restored = Database::in_memory().await.unwrap();
@@ -79,5 +92,22 @@ async fn exports_and_restores_a_database() {
     assert_eq!(
         restored.events().for_work(work.id()).await.unwrap(),
         vec![WatchEvent::completed(work.id())]
+    );
+    assert_eq!(
+        restored.library().get(work.id()).await.unwrap(),
+        Some(LibraryEntry {
+            work_id: work.id(),
+            comment: Some("Repère".to_owned())
+        })
+    );
+    assert_eq!(
+        restored
+            .snapshots()
+            .latest_profile()
+            .await
+            .unwrap()
+            .unwrap()
+            .profile,
+        json!({"history_size": 1})
     );
 }

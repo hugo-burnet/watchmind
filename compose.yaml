@@ -1,0 +1,26 @@
+services:
+  api:
+    build: .
+    restart: unless-stopped
+    environment:
+      WATCHMIND_API_TOKEN: ${WATCHMIND_API_TOKEN:-}
+    volumes:
+      - watchmind-data:/data
+
+  web:
+    build: ./apps/watchmind-web
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      WATCHMIND_API_TOKEN: ${WATCHMIND_API_TOKEN:-}
+    ports:
+      - "127.0.0.1:${WATCHMIND_PORT:-8080}:80"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1/api/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  watchmind-data:

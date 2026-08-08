@@ -33,4 +33,17 @@ await page.screenshot({ path: "../../docs/screenshots/watchmind-l18-mobile.png",
 await page.setViewportSize({ width: 1440, height: 1050 });
 await page.screenshot({ path: "../../docs/screenshots/watchmind-l18-desktop.png", fullPage: true });
 
+await page.getByRole("button", { name: "Bibliothèque" }).click();
+await page.locator(".work-card__open").first().click();
+await page.getByRole("button", { name: "Marquer un rewatch" }).click();
+await page.getByText("Rewatch enregistré.").waitFor();
+await page.getByRole("button", { name: "Fermer la fiche" }).click();
+await page.locator(".work-card__open").first().click();
+await page.locator(".rewatch-count").waitFor();
+await page.getByRole("button", { name: "Fermer la fiche" }).click();
+const cardCount = await page.locator(".work-card").count();
+await page.getByRole("button", { name: /^Supprimer .* de la bibliothèque$/ }).last().click();
+await page.getByRole("button", { name: "Confirmer" }).click();
+await page.locator(".work-card").nth(cardCount - 1).waitFor({ state: "detached" });
+
 await browser.close();

@@ -2,6 +2,7 @@
 
 use std::{
     collections::HashSet,
+    fmt::Write as _,
     future::Future,
     pin::Pin,
     sync::Arc,
@@ -10,8 +11,10 @@ use std::{
 
 use axum::{
     Json, Router,
+    body::Body,
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{Request, StatusCode, header},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post, put},
 };
@@ -28,6 +31,7 @@ use watchmind_recommendation::{
 type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 type SearchFuture = Pin<Box<dyn Future<Output = Result<CatalogResponse, String>> + Send>>;
 type Search = Arc<dyn Fn(String, u32, u8, u64) -> SearchFuture + Send + Sync>;
+type Discover = Arc<dyn Fn(u32, u8, u64) -> SearchFuture + Send + Sync>;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CatalogResponse {
@@ -39,6 +43,7 @@ pub struct CatalogResponse {
 pub struct ApiState {
     database: Database,
     search: Search,
+    discover: Discover,
     clock: Clock,
 }
 
@@ -59,19 +64,31 @@ impl ApiState {
         clock: impl Fn() -> u64 + Send + Sync + 'static,
     ) -> Self {
         let catalog = Arc::new(catalog);
-        Self::with_search(database, clock, move |query, page, per_page, now| {
-            let catalog = Arc::clone(&catalog);
-            async move {
-                catalog
-                    .search(&query, page, per_page, now)
-                    .await
-                    .map(|result| CatalogResponse {
-                        works: result.works().to_vec(),
-                        from_cache: result.from_cache(),
-                    })
-                    .map_err(|error| error.to_string())
-            }
-        })
+        let search_catalog = Arc::clone(&catalog);
+        Self {
+            database,
+            search: Arc::new(move |query, page, per_page, now| {
+                let catalog = Arc::clone(&search_catalog);
+                Box::pin(async move {
+                    catalog
+                        .search(&query, page, per_page, now)
+                        .await
+                        .map(|result| catalog_response(&result))
+                        .map_err(|error| error.to_string())
+                })
+            }),
+            discover: Arc::new(move |page, per_page, now| {
+                let catalog = Arc::clone(&catalog);
+                Box::pin(async move {
+                    catalog
+                        .discover(page, per_page, now)
+                        .await
+                        .map(|result| catalog_response(&result))
+                        .map_err(|error| error.to_string())
+                })
+            }),
+            clock: Arc::new(clock),
+        }
     }
 
     #[must_use]
@@ -84,13 +101,25 @@ impl ApiState {
         F: Fn(String, u32, u8, u64) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<CatalogResponse, String>> + Send + 'static,
     {
+        let search = Arc::new(search);
+        let discovery = Arc::clone(&search);
         Self {
             database,
             search: Arc::new(move |query, page, per_page, now| {
                 Box::pin(search(query, page, per_page, now))
             }),
+            discover: Arc::new(move |page, per_page, now| {
+                Box::pin(discovery("__discover__".to_owned(), page, per_page, now))
+            }),
             clock: Arc::new(clock),
         }
+    }
+}
+
+fn catalog_response(result: &watchmind_infrastructure::SearchResult) -> CatalogResponse {
+    CatalogResponse {
+        works: result.works().to_vec(),
+        from_cache: result.from_cache(),
     }
 }
 
@@ -99,7 +128,10 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/anime/search", get(search_anime))
         .route("/api/works/{id}", get(read_work))
         .route("/api/library", get(library))
-        .route("/api/library/{id}", put(upsert_library))
+        .route(
+            "/api/library/{id}",
+            put(upsert_library).delete(remove_library),
+        )
         .route("/api/library/{id}/rating", put(upsert_rating))
         .route("/api/library/{id}/events", post(append_event))
         .route("/api/recommendations", get(recommendations))
@@ -114,7 +146,73 @@ pub fn router(state: ApiState) -> Router {
             get(historical_recommendations),
         )
         .route("/api/evaluation", get(evaluation))
+        .route("/api/health", get(health))
+        .route("/api/export", get(export_library))
         .with_state(state)
+}
+
+pub fn secured_router(state: ApiState, token: Option<String>) -> Router {
+    let app = router(state);
+    token.map_or(app.clone(), |token| {
+        app.layer(middleware::from_fn_with_state(token, require_token))
+    })
+}
+
+async fn require_token(
+    State(token): State<String>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    let expected = format!("Bearer {token}");
+    if request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        == Some(expected.as_str())
+    {
+        next.run(request).await
+    } else {
+        ApiError {
+            status: StatusCode::UNAUTHORIZED,
+            message: "missing or invalid bearer token".to_owned(),
+        }
+        .into_response()
+    }
+}
+
+async fn health() -> Json<Value> {
+    Json(json!({ "status": "ok" }))
+}
+
+#[derive(Deserialize)]
+struct ExportQuery {
+    #[serde(default = "json_format")]
+    format: String,
+}
+
+fn json_format() -> String {
+    "json".to_owned()
+}
+
+async fn export_library(
+    State(state): State<ApiState>,
+    Query(query): Query<ExportQuery>,
+) -> Result<Response, ApiError> {
+    let entries = complete_library(&state).await?;
+    let (content_type, body) = match query.format.as_str() {
+        "json" => (
+            "application/json; charset=utf-8",
+            serde_json::to_string_pretty(&entries).map_err(ApiError::internal)?,
+        ),
+        "csv" => ("text/csv; charset=utf-8", library_csv(&entries)),
+        "markdown" | "md" => ("text/markdown; charset=utf-8", library_markdown(&entries)),
+        _ => {
+            return Err(ApiError::bad_request(
+                "format must be json, csv or markdown",
+            ));
+        }
+    };
+    Ok(([(header::CONTENT_TYPE, content_type)], body).into_response())
 }
 
 #[derive(Deserialize)]
@@ -154,6 +252,10 @@ struct CompleteWork {
 }
 
 async fn library(State(state): State<ApiState>) -> Result<Json<Vec<CompleteWork>>, ApiError> {
+    Ok(Json(complete_library(&state).await?))
+}
+
+async fn complete_library(state: &ApiState) -> Result<Vec<CompleteWork>, ApiError> {
     let mut result = Vec::new();
     for entry in state.database.library().all().await? {
         let work = state
@@ -169,7 +271,67 @@ async fn library(State(state): State<ApiState>) -> Result<Json<Vec<CompleteWork>
             library: Some(entry),
         });
     }
-    Ok(Json(result))
+    Ok(result)
+}
+
+fn csv_cell(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\"\""))
+}
+
+fn library_csv(entries: &[CompleteWork]) -> String {
+    let mut output = "id,title,rating,status,comment\n".to_owned();
+    for entry in entries {
+        let status = entry.events.last().map_or("en_cours", |event| match event {
+            WatchEvent::Completed { .. } => "termine",
+            WatchEvent::Dropped { .. } => "arrete",
+            WatchEvent::Rewatched { .. } => "rewatch",
+        });
+        writeln!(
+            output,
+            "{},{},{},{},{}",
+            entry.work.id().get(),
+            csv_cell(entry.work.title()),
+            entry
+                .rating
+                .as_ref()
+                .map_or_else(String::new, |rating| rating.rating().get().to_string()),
+            status,
+            csv_cell(
+                entry
+                    .library
+                    .as_ref()
+                    .and_then(|library| library.comment.as_deref())
+                    .unwrap_or_default()
+            )
+        )
+        .expect("writing to a String cannot fail");
+    }
+    output
+}
+
+fn library_markdown(entries: &[CompleteWork]) -> String {
+    let mut output =
+        "# Bibliothèque WatchMind\n\n| Œuvre | Note | Commentaire |\n| --- | ---: | --- |\n"
+            .to_owned();
+    for entry in entries {
+        writeln!(
+            output,
+            "| {} | {} | {} |",
+            entry.work.title().replace('|', "\\|"),
+            entry.rating.as_ref().map_or_else(
+                || "—".to_owned(),
+                |rating| format!("{}/10", rating.rating().get())
+            ),
+            entry
+                .library
+                .as_ref()
+                .and_then(|library| library.comment.as_deref())
+                .unwrap_or_default()
+                .replace('|', "\\|")
+        )
+        .expect("writing to a String cannot fail");
+    }
+    output
 }
 
 async fn read_work(
@@ -206,6 +368,7 @@ async fn upsert_library(
     if input.work.id() != id {
         return Err(ApiError::bad_request("path and work identifiers differ"));
     }
+    let is_new = state.database.library().get(id).await?.is_none();
     state.database.works().upsert(&input.work).await?;
     state
         .database
@@ -215,7 +378,60 @@ async fn upsert_library(
             comment: normalize_comment(input.comment),
         })
         .await?;
+    if is_new {
+        let dataset = load_dataset(&state.database).await?;
+        if !dataset.ratings().is_empty() {
+            let (profile_json, score_json) = calculate_snapshot(&dataset)?;
+            state
+                .database
+                .snapshots()
+                .create((state.clock)(), &profile_json, &score_json)
+                .await?;
+        }
+    }
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn remove_library(
+    State(state): State<ApiState>,
+    Path(raw_id): Path<u32>,
+) -> Result<Json<Value>, ApiError> {
+    let id = work_id(raw_id)?;
+    state
+        .database
+        .library()
+        .get(id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("library entry not found"))?;
+    let dataset = load_dataset(&state.database).await?;
+    let dataset = OfflineDataset::from_parts(
+        dataset
+            .catalog()
+            .iter()
+            .filter(|work| work.id() != id)
+            .cloned()
+            .collect(),
+        dataset
+            .ratings()
+            .iter()
+            .filter(|rating| rating.work_id() != id)
+            .cloned()
+            .collect(),
+        dataset
+            .events()
+            .iter()
+            .filter(|event| event.work_id() != id)
+            .cloned()
+            .collect(),
+    )
+    .map_err(ApiError::bad_request)?;
+    let (profile_json, score_json) = calculate_snapshot(&dataset)?;
+    let version = state
+        .database
+        .snapshots()
+        .create_for_removal(id, (state.clock)(), &profile_json, &score_json)
+        .await?;
+    Ok(Json(json!({ "profile_version": version })))
 }
 
 #[derive(Deserialize)]
@@ -308,15 +524,70 @@ async fn recommendation_feedback(
 }
 
 async fn recommendations(State(state): State<ApiState>) -> Result<Json<Value>, ApiError> {
-    let snapshot = state
-        .database
-        .snapshots()
-        .latest_profile()
-        .await?
-        .ok_or_else(|| ApiError::not_found("profile has not been calculated"))?;
-    let scores = state.database.snapshots().scores(snapshot.version).await?;
+    let current = state.database.snapshots().latest_profile().await?;
+    let current_scores = match &current {
+        Some(snapshot) => state.database.snapshots().scores(snapshot.version).await?,
+        None => Vec::new(),
+    };
+    let discovered = match (state.discover)(1, 50, (state.clock)()).await {
+        Ok(result) => result.works,
+        Err(_) if current.is_some() => {
+            let snapshot = current.expect("checked above");
+            return Ok(Json(json!({
+                "profile_version": snapshot.version,
+                "recommendations": current_scores
+            })));
+        }
+        Err(error) => return Err(ApiError::internal(error)),
+    };
+    let mut visible_discovered = Vec::new();
+    for work in discovered {
+        if state
+            .database
+            .preferences()
+            .get(&format!("hidden_work:{}", work.id().get()))
+            .await?
+            .is_none()
+        {
+            visible_discovered.push(work);
+        }
+    }
+    for work in &visible_discovered {
+        state.database.works().upsert(work).await?;
+    }
+    let personal = load_dataset(&state.database).await?;
+    let personal_ids = personal
+        .catalog()
+        .iter()
+        .map(watchmind_recommendation::NormalizedWork::id)
+        .collect::<HashSet<_>>();
+    let mut catalog = personal.catalog().to_vec();
+    catalog.extend(
+        visible_discovered
+            .into_iter()
+            .filter(|work| !personal_ids.contains(&work.id())),
+    );
+    let dataset = OfflineDataset::from_parts(
+        catalog,
+        personal.ratings().to_vec(),
+        personal.events().to_vec(),
+    )
+    .map_err(ApiError::bad_request)?;
+    let (profile, scores) = calculate_snapshot(&dataset)?;
+    let version = match current {
+        Some(snapshot) if snapshot.profile == profile && current_scores == scores => {
+            snapshot.version
+        }
+        _ => {
+            state
+                .database
+                .snapshots()
+                .create((state.clock)(), &profile, &scores)
+                .await?
+        }
+    };
     Ok(Json(
-        json!({ "profile_version": snapshot.version, "recommendations": scores }),
+        json!({ "profile_version": version, "recommendations": scores }),
     ))
 }
 
@@ -344,6 +615,57 @@ async fn evaluation(State(state): State<ApiState>) -> Result<Json<Value>, ApiErr
 }
 
 fn calculate_snapshot(dataset: &OfflineDataset) -> Result<(Value, Vec<Value>), ApiError> {
+    if dataset.ratings().is_empty() {
+        let mut scores = dataset
+            .catalog()
+            .iter()
+            .filter_map(|work| {
+                let global_score = work.global_score()?.get();
+                let value = (global_score - 5.0) / 50.0;
+                let contribution = json!({
+                    "source": { "kind": "anilist_prior" },
+                    "value": value,
+                    "detail": format!("Prior AniList faible ({global_score:.1}/10)")
+                });
+                Some(json!({
+                    "work_id": work.id(),
+                    "title": work.title(),
+                    "score": { "total": value, "contributions": [contribution.clone()] },
+                    "explanation": {
+                        "reasons": if value > 0.0 { vec![contribution.clone()] } else { Vec::new() },
+                        "risks": if value < 0.0 { vec![contribution] } else { Vec::new() }
+                    }
+                }))
+            })
+            .collect::<Vec<_>>();
+        scores.sort_by(|left, right| {
+            right["score"]["total"]
+                .as_f64()
+                .unwrap_or_default()
+                .total_cmp(&left["score"]["total"].as_f64().unwrap_or_default())
+        });
+        return Ok((
+            json!({
+                "history_size": 0,
+                "confidence": 0.0,
+                "mode": "sparse_history",
+                "tag_affinities": [],
+                "poles": [],
+                "axes": {
+                    "source": "prior",
+                    "observed_works": 0,
+                    "weights": [
+                        { "axis": "story", "weight": 0.2 },
+                        { "axis": "characters", "weight": 0.2 },
+                        { "axis": "world_building", "weight": 0.2 },
+                        { "axis": "visual_direction", "weight": 0.2 },
+                        { "axis": "sound_and_music", "weight": 0.2 }
+                    ]
+                }
+            }),
+            scores,
+        ));
+    }
     let profile = build_taste_profile(dataset, &TasteProfileConfig::default())
         .map_err(ApiError::bad_request)?;
     let rated = dataset
@@ -370,7 +692,12 @@ fn calculate_snapshot(dataset: &OfflineDataset) -> Result<(Value, Vec<Value>), A
 }
 
 async fn load_dataset(database: &Database) -> Result<OfflineDataset, ApiError> {
-    let works = database.works().all().await?;
+    let mut works = Vec::new();
+    for entry in database.library().all().await? {
+        if let Some(work) = database.works().get(entry.work_id).await? {
+            works.push(work);
+        }
+    }
     let mut ratings = Vec::new();
     let mut events = Vec::new();
     for work in &works {

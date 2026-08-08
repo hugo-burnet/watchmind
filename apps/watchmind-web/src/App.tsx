@@ -4,6 +4,7 @@ import { TasteMap } from "./components/TasteMap";
 import { Library } from "./components/Library";
 import { ForYou } from "./components/ForYou";
 import { Profile } from "./components/Profile";
+import { Evaluation } from "./components/Evaluation";
 
 const navItems = ["Aujourd’hui", "Bibliothèque", "Carte de goût", "Évaluation"];
 
@@ -39,7 +40,7 @@ export function App() {
       </aside>
 
       <main id="main" className="main-content">
-        {active === "Aujourd’hui" ? <ForYou /> : active === "Bibliothèque" ? <Library /> : active === "Carte de goût" ? <Profile /> : <>
+        {active === "Aujourd’hui" ? <ForYou /> : active === "Bibliothèque" ? <Library /> : active === "Carte de goût" ? <Profile /> : active === "Évaluation" ? <Evaluation /> : <>
         <header className="page-header">
           <div>
             <p className="eyebrow">Laboratoire visuel / lot 15</p>

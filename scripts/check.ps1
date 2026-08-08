@@ -16,5 +16,10 @@ if (Get-Command npm -ErrorAction SilentlyContinue) {
         Pop-Location
         exit $LASTEXITCODE
     }
+    npm run budget
+    if ($LASTEXITCODE -ne 0) {
+        Pop-Location
+        exit $LASTEXITCODE
+    }
     Pop-Location
 }

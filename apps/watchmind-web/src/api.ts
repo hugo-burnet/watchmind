@@ -47,6 +47,11 @@ export type TasteProfile = {
 };
 
 export type ProfileSnapshot = { version: number; created_at_unix: number; profile: TasteProfile };
+export type EvaluationReport = {
+  cases: number;
+  configuration: { random_seed: number; relevant_rating_threshold: number };
+  baselines: { name: "random" | "anilist_global_score" | "tag_overlap"; metrics: { median_rank: number; recall_at_10: number; recall_at_20: number; mean_reciprocal_rank: number }; target_ranks: { work_id: number; rank: number }[] }[];
+};
 
 type CatalogResponse = { works: Work[]; from_cache: boolean };
 
@@ -69,6 +74,7 @@ export const api = {
     request<void>(`/api/library/${work.id}`, { method: "PUT", body: JSON.stringify({ work, comment }) }),
   updateComment: (work: Work, comment: string | null) =>
     request<void>(`/api/library/${work.id}`, { method: "PUT", body: JSON.stringify({ work, comment }) }),
+  remove: (id: number) => request<{ profile_version: number }>(`/api/library/${id}`, { method: "DELETE" }),
   rate: (id: number, rating: number, aspects: string[]) =>
     request<{ profile_version: number }>(`/api/library/${id}/rating`, {
       method: "PUT",
@@ -81,4 +87,5 @@ export const api = {
   feedback: (id: number, helpful: boolean) => request<void>(`/api/recommendations/${id}/feedback`, { method: "POST", body: JSON.stringify({ helpful }) }),
   profile: () => request<ProfileSnapshot>("/api/profile"),
   profiles: () => request<ProfileSnapshot[]>("/api/profiles"),
+  evaluation: () => request<EvaluationReport>("/api/evaluation"),
 };

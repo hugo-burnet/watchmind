@@ -20,6 +20,15 @@ const SEARCH_QUERY: &str = r"query SearchAnime($search: String!, $page: Int!, $p
   }
 }";
 
+const DISCOVER_QUERY: &str = r"query DiscoverAnime($page: Int!, $perPage: Int!) {
+  Page(page: $page, perPage: $perPage) {
+    media(type: ANIME, sort: [SCORE_DESC, POPULARITY_DESC], status: FINISHED) {
+      id title { userPreferred romaji english native } averageScore duration episodes format
+      startDate { year } tags { name rank isMediaSpoiler } studios(isMain: true) { nodes { name } }
+    }
+  }
+}";
+
 #[derive(Debug, thiserror::Error)]
 pub enum AniListError {
     #[error("AniList request failed: {0}")]
@@ -197,6 +206,45 @@ impl AniListCatalog {
             from_cache: false,
         })
     }
+
+    /// Charge une page de candidats populaires et bien notés, indépendamment
+    /// de la bibliothèque personnelle.
+    /// # Errors
+    /// Retourne les erreurs réseau, cache, JSON ou de normalisation.
+    pub async fn discover(
+        &self,
+        page: u32,
+        per_page: u8,
+        now_unix: u64,
+    ) -> Result<SearchResult, AniListError> {
+        let per_page = per_page.clamp(1, 50);
+        let page = page.max(1);
+        let key = self.cache.path_for("__discover__", page, per_page);
+        if let Some(payload) = self.cache.read(&key, now_unix).await? {
+            return Ok(SearchResult {
+                works: AniListNormalizer::normalize(&payload)?,
+                from_cache: true,
+            });
+        }
+        let payload = self
+            .client
+            .post(&self.endpoint)
+            .json(&DiscoverGraphQlRequest {
+                query: DISCOVER_QUERY,
+                variables: DiscoverVariables { page, per_page },
+            })
+            .send()
+            .await?
+            .error_for_status()?
+            .text()
+            .await?;
+        let works = AniListNormalizer::normalize(&payload)?;
+        self.cache.write(&key, now_unix, &payload).await?;
+        Ok(SearchResult {
+            works,
+            from_cache: false,
+        })
+    }
 }
 
 fn normalize_media(media: Media) -> Result<NormalizedWork, AniListError> {
@@ -264,6 +312,17 @@ fn map_format(value: &str) -> Option<WorkFormat> {
 struct GraphQlRequest<'a> {
     query: &'static str,
     variables: Variables<'a>,
+}
+#[derive(Serialize)]
+struct DiscoverGraphQlRequest {
+    query: &'static str,
+    variables: DiscoverVariables,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DiscoverVariables {
+    page: u32,
+    per_page: u8,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]

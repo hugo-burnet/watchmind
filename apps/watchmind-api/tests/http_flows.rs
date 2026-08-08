@@ -6,7 +6,7 @@ use axum::{
 use http_body_util::BodyExt as _;
 use serde_json::{Value, json};
 use tower::ServiceExt as _;
-use watchmind_api::{ApiState, CatalogResponse, router};
+use watchmind_api::{ApiState, CatalogResponse, router, secured_router};
 use watchmind_infrastructure::{AniListNormalizer, Database};
 
 async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
@@ -152,4 +152,81 @@ async fn library_flow_versions_profiles_and_preserves_old_explanations() {
     assert_eq!(current["profile_version"], 2);
     let (_, after) = call(&app, "GET", "/api/profile/1/recommendations", None).await;
     assert_eq!(after["recommendations"][0]["explanation"], old_explanation);
+
+    let late_candidate = json!({
+        "id": 20, "title": "Naruto", "global_score": 7.9,
+        "tags": [{"name": "Crime", "weight": 0.4}, {"name": "Adventure", "weight": 0.8}]
+    });
+    let (status, _) = call(
+        &app,
+        "PUT",
+        "/api/library/20",
+        Some(json!({ "work": late_candidate, "comment": null })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, refreshed) = call(&app, "GET", "/api/recommendations", None).await;
+    assert_eq!(refreshed["profile_version"], 3);
+    assert!(
+        refreshed["recommendations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|recommendation| recommendation["work_id"] == 20)
+    );
+
+    let (status, removed) = call(&app, "DELETE", "/api/library/5114", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(removed["profile_version"], 4);
+    let (_, library) = call(&app, "GET", "/api/library", None).await;
+    assert_eq!(library.as_array().unwrap().len(), 2);
+    let (_, historical) = call(&app, "GET", "/api/profile/2/recommendations", None).await;
+    assert_eq!(historical["recommendations"][0]["work_id"], 5114);
+
+    let (status, removed) = call(&app, "DELETE", "/api/library/1535", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(removed["profile_version"], 5);
+    let (_, profile) = call(&app, "GET", "/api/profile", None).await;
+    assert_eq!(profile["profile"]["history_size"], 0);
+    let (_, fallback) = call(&app, "GET", "/api/recommendations", None).await;
+    assert_eq!(fallback["recommendations"][0]["work_id"], 20);
+    assert_eq!(
+        fallback["recommendations"][0]["explanation"]["reasons"][0]["source"]["kind"],
+        "anilist_prior"
+    );
+}
+
+#[tokio::test]
+async fn secured_router_requires_the_configured_bearer_token() {
+    let db = Database::in_memory().await.unwrap();
+    let app = secured_router(
+        ApiState::with_search(
+            db,
+            || 0,
+            |_, _, _, _| async {
+                Ok(CatalogResponse {
+                    works: Vec::new(),
+                    from_cache: false,
+                })
+            },
+        ),
+        Some("secret".to_owned()),
+    );
+    let unauthorized = Request::builder()
+        .uri("/api/health")
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(unauthorized).await.unwrap().status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let authorized = Request::builder()
+        .uri("/api/health")
+        .header("authorization", "Bearer secret")
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.oneshot(authorized).await.unwrap().status(),
+        StatusCode::OK
+    );
 }

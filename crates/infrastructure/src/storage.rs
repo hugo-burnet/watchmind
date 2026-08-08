@@ -102,11 +102,13 @@ impl Database {
     /// Retourne une erreur de lecture SQL, sérialisation ou écriture.
     pub async fn export(&self, path: impl AsRef<Path>) -> Result<(), StorageError> {
         let backup = Backup {
-            version: 1,
+            version: 2,
             works: self.works().all().await?,
             ratings: self.ratings().all().await?,
             events: self.events().all().await?,
             preferences: self.preferences().all().await?,
+            library: self.library().all().await?,
+            snapshots: self.snapshots().archive().await?,
         };
         tokio::fs::write(path, serde_json::to_vec_pretty(&backup)?).await?;
         Ok(())
@@ -117,10 +119,13 @@ impl Database {
     /// Refuse un export invalide et annule alors toute la transaction.
     pub async fn restore(&self, path: impl AsRef<Path>) -> Result<(), StorageError> {
         let backup: Backup = serde_json::from_slice(&tokio::fs::read(path).await?)?;
-        if backup.version != 1 {
+        if !matches!(backup.version, 1 | 2) {
             return Err(StorageError::UnsupportedBackup(backup.version));
         }
         let mut transaction = self.pool.begin().await?;
+        sqlx::query("DELETE FROM profile_snapshots")
+            .execute(&mut *transaction)
+            .await?;
         sqlx::query("DELETE FROM preferences")
             .execute(&mut *transaction)
             .await?;
@@ -136,12 +141,28 @@ impl Database {
         for event in &backup.events {
             insert_event(&mut transaction, event).await?;
         }
+        for entry in &backup.library {
+            sqlx::query("INSERT INTO library(work_id, comment) VALUES (?, ?)")
+                .bind(i64::from(entry.work_id.get()))
+                .bind(entry.comment.as_deref())
+                .execute(&mut *transaction)
+                .await?;
+        }
         for (key, value) in &backup.preferences {
             sqlx::query("INSERT INTO preferences(key, value) VALUES (?, ?)")
                 .bind(key)
                 .bind(serde_json::to_string(value)?)
                 .execute(&mut *transaction)
                 .await?;
+        }
+        for snapshot in &backup.snapshots {
+            insert_snapshot(
+                &mut transaction,
+                snapshot_timestamp(snapshot.created_at_unix)?,
+                &snapshot.profile,
+                &snapshot.scores,
+            )
+            .await?;
         }
         transaction.commit().await?;
         Ok(())
@@ -215,6 +236,13 @@ pub struct ProfileSnapshot {
     pub profile: serde_json::Value,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct ArchivedSnapshot {
+    created_at_unix: u64,
+    profile: serde_json::Value,
+    scores: Vec<serde_json::Value>,
+}
+
 #[derive(Clone)]
 pub struct SnapshotRepository(SqlitePool);
 impl SnapshotRepository {
@@ -231,6 +259,39 @@ impl SnapshotRepository {
         let timestamp = snapshot_timestamp(created_at_unix)?;
         let mut tx = self.0.begin().await?;
         upsert_rating(&mut tx, rating).await?;
+        let version = insert_snapshot(&mut tx, timestamp, profile, scores).await?;
+        tx.commit().await?;
+        Ok(version)
+    }
+
+    /// Retire une œuvre de la bibliothèque et persiste le profil recalculé
+    /// dans une transaction unique. L'œuvre catalogue reste disponible afin
+    /// de préserver les explications historiques qui la référencent.
+    /// # Errors
+    /// Retourne une erreur sans suppression ni snapshot partiel.
+    pub async fn create_for_removal(
+        &self,
+        work_id: WorkId,
+        created_at_unix: u64,
+        profile: &serde_json::Value,
+        scores: &[serde_json::Value],
+    ) -> Result<i64, StorageError> {
+        let timestamp = snapshot_timestamp(created_at_unix)?;
+        let mut tx = self.0.begin().await?;
+        for table in ["aspects", "events", "ratings", "library"] {
+            sqlx::query(&format!("DELETE FROM {table} WHERE work_id = ?"))
+                .bind(i64::from(work_id.get()))
+                .execute(&mut *tx)
+                .await?;
+        }
+        sqlx::query(
+            "INSERT INTO preferences(key, value) VALUES (?, ?) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(format!("hidden_work:{}", work_id.get()))
+        .bind(r#"{"hidden":true}"#)
+        .execute(&mut *tx)
+        .await?;
         let version = insert_snapshot(&mut tx, timestamp, profile, scores).await?;
         tx.commit().await?;
         Ok(version)
@@ -286,6 +347,20 @@ impl SnapshotRepository {
         .into_iter()
         .map(|payload| serde_json::from_str(&payload).map_err(Into::into))
         .collect()
+    }
+
+    async fn archive(&self) -> Result<Vec<ArchivedSnapshot>, StorageError> {
+        let mut result = Vec::new();
+        let mut profiles = self.profiles().await?;
+        profiles.reverse();
+        for snapshot in profiles {
+            result.push(ArchivedSnapshot {
+                scores: self.scores(snapshot.version).await?,
+                created_at_unix: snapshot.created_at_unix,
+                profile: snapshot.profile,
+            });
+        }
+        Ok(result)
     }
 }
 
@@ -651,4 +726,8 @@ struct Backup {
     ratings: Vec<RatingRecord>,
     events: Vec<WatchEvent>,
     preferences: Vec<(String, serde_json::Value)>,
+    #[serde(default)]
+    library: Vec<LibraryEntry>,
+    #[serde(default)]
+    snapshots: Vec<ArchivedSnapshot>,
 }
