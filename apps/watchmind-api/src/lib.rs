@@ -103,7 +103,12 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/library/{id}/rating", put(upsert_rating))
         .route("/api/library/{id}/events", post(append_event))
         .route("/api/recommendations", get(recommendations))
+        .route(
+            "/api/recommendations/{id}/feedback",
+            post(recommendation_feedback),
+        )
         .route("/api/profile", get(profile))
+        .route("/api/profiles", get(profiles))
         .route(
             "/api/profile/{version}/recommendations",
             get(historical_recommendations),
@@ -273,6 +278,33 @@ async fn profile(State(state): State<ApiState>) -> Result<Json<ProfileSnapshot>,
         .await?
         .map(Json)
         .ok_or_else(|| ApiError::not_found("profile has not been calculated"))
+}
+
+async fn profiles(State(state): State<ApiState>) -> Result<Json<Vec<ProfileSnapshot>>, ApiError> {
+    Ok(Json(state.database.snapshots().profiles().await?))
+}
+
+#[derive(Deserialize)]
+struct RecommendationFeedback {
+    helpful: bool,
+}
+
+async fn recommendation_feedback(
+    State(state): State<ApiState>,
+    Path(raw_id): Path<u32>,
+    Json(feedback): Json<RecommendationFeedback>,
+) -> Result<StatusCode, ApiError> {
+    let id = work_id(raw_id)?;
+    ensure_work(&state, id).await?;
+    state
+        .database
+        .preferences()
+        .set(
+            &format!("recommendation_feedback:{}", id.get()),
+            &json!({ "helpful": feedback.helpful, "created_at_unix": (state.clock)() }),
+        )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn recommendations(State(state): State<ApiState>) -> Result<Json<Value>, ApiError> {

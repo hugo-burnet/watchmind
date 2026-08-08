@@ -2,11 +2,13 @@ import { useState } from "react";
 import { Button, StatePanel } from "./components/Primitives";
 import { TasteMap } from "./components/TasteMap";
 import { Library } from "./components/Library";
+import { ForYou } from "./components/ForYou";
+import { Profile } from "./components/Profile";
 
 const navItems = ["Aujourd’hui", "Bibliothèque", "Carte de goût", "Évaluation"];
 
 export function App() {
-  const [active, setActive] = useState("Bibliothèque");
+  const [active, setActive] = useState("Aujourd’hui");
 
   return (
     <div className="app-shell">
@@ -26,7 +28,6 @@ export function App() {
               aria-current={active === item ? "page" : undefined}
             >
               <span>{item}</span>
-              {item === "Aujourd’hui" && <em>2</em>}
             </button>
           ))}
         </nav>
@@ -38,7 +39,7 @@ export function App() {
       </aside>
 
       <main id="main" className="main-content">
-        {active === "Bibliothèque" ? <Library /> : <>
+        {active === "Aujourd’hui" ? <ForYou /> : active === "Bibliothèque" ? <Library /> : active === "Carte de goût" ? <Profile /> : <>
         <header className="page-header">
           <div>
             <p className="eyebrow">Laboratoire visuel / lot 15</p>

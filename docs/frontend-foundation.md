@@ -60,3 +60,7 @@ Pour les régénérer, lancer `npm run preview`, puis `npm run capture` depuis
 
 Le lot 16 ajoute les captures du parcours bibliothèque, sans remplacer celles
 du laboratoire : `watchmind-l16-desktop.png` et `watchmind-l16-mobile.png`.
+
+Les lots 17 et 18 prolongent cette revue avec les vues explicables « Pour
+vous » et « Profil de goût », chacune capturée en desktop et mobile sous
+`watchmind-l17-*` et `watchmind-l18-*`.

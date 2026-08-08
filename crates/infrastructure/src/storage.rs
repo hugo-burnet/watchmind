@@ -260,6 +260,20 @@ impl SnapshotRepository {
         row.map(|value| snapshot_from_row(&value)).transpose()
     }
 
+    /// Liste toutes les versions de profil, de la plus récente à la plus ancienne.
+    /// # Errors
+    /// Retourne une erreur SQL ou si un JSON stocké est invalide.
+    pub async fn profiles(&self) -> Result<Vec<ProfileSnapshot>, StorageError> {
+        sqlx::query(
+            "SELECT version, created_at_unix, payload FROM profile_snapshots ORDER BY version DESC",
+        )
+        .fetch_all(&self.0)
+        .await?
+        .into_iter()
+        .map(|row| snapshot_from_row(&row))
+        .collect()
+    }
+
     /// # Errors
     /// Retourne une erreur SQL ou si le JSON stocké est invalide.
     pub async fn scores(&self, version: i64) -> Result<Vec<serde_json::Value>, StorageError> {

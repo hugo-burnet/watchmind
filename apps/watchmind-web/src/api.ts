@@ -24,6 +24,30 @@ export type CompleteWork = {
   events: WatchEvent[];
 };
 
+export type Contribution = {
+  source: { kind: "tag_affinity" | "pole_similarity" | "anilist_prior" | "personal_axis" | "penalty"; axis?: string };
+  value: number;
+  detail: string;
+};
+
+export type Recommendation = {
+  work_id: number;
+  title: string;
+  score: { total: number; contributions: Contribution[] };
+  explanation: { reasons: Contribution[]; risks: Contribution[] };
+};
+
+export type TasteProfile = {
+  history_size: number;
+  confidence: number;
+  mode: "sparse_history" | "sparse_favorites" | "clustered";
+  tag_affinities: { name: string; value: number; confidence: number; observed_works: number }[];
+  poles: { ordinal: number; member_count: number; dominant_tags: Tag[]; representative_work_ids: number[] }[];
+  axes: { source: "prior" | "learned"; observed_works: number; weights: { axis: string; weight: number }[] };
+};
+
+export type ProfileSnapshot = { version: number; created_at_unix: number; profile: TasteProfile };
+
 type CatalogResponse = { works: Work[]; from_cache: boolean };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -52,4 +76,9 @@ export const api = {
     }),
   event: (id: number, event: WatchEvent) =>
     request<void>(`/api/library/${id}/events`, { method: "POST", body: JSON.stringify(event) }),
+  recommendations: () => request<{ profile_version: number; recommendations: Recommendation[] }>("/api/recommendations"),
+  historicalRecommendations: (version: number) => request<{ profile_version: number; recommendations: Recommendation[] }>(`/api/profile/${version}/recommendations`),
+  feedback: (id: number, helpful: boolean) => request<void>(`/api/recommendations/${id}/feedback`, { method: "POST", body: JSON.stringify({ helpful }) }),
+  profile: () => request<ProfileSnapshot>("/api/profile"),
+  profiles: () => request<ProfileSnapshot[]>("/api/profiles"),
 };

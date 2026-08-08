@@ -17,7 +17,9 @@ SQLite/AniList dans `watchmind-infrastructure`.
 ## Profil et recommandations
 
 - `GET /api/profile` retourne le dernier snapshot versionné.
+- `GET /api/profiles` retourne toutes les versions du profil, de la plus récente à l'ancienne.
 - `GET /api/recommendations` retourne les scores et contributions de sa version.
+- `POST /api/recommendations/{id}/feedback` conserve un retour utile/pas utile.
 - `GET /api/profile/{version}/recommendations` relit une explication historique.
 - `GET /api/evaluation` exécute l'évaluation sur les données locales.
 

@@ -30,6 +30,7 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn library_flow_versions_profiles_and_preserves_old_explanations() {
     let db = Database::in_memory().await.unwrap();
     let works =
@@ -132,6 +133,20 @@ async fn library_flow_versions_profiles_and_preserves_old_explanations() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(second["profile_version"], 2);
+
+    let (status, profiles) = call(&app, "GET", "/api/profiles", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(profiles.as_array().unwrap().len(), 2);
+    assert_eq!(profiles[0]["version"], 2);
+
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/recommendations/5114/feedback",
+        Some(json!({ "helpful": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
 
     let (_, current) = call(&app, "GET", "/api/recommendations", None).await;
     assert_eq!(current["profile_version"], 2);
