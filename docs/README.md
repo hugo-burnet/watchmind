@@ -15,3 +15,5 @@ Les invariants et formats JSON sont documentés dans [`domain-contracts.md`](dom
 Le format du dataset offline est documenté dans [`offline-import.md`](offline-import.md).
 Le calcul de la cible centrée et ses paramètres sont documentés dans
 [`personal-affinity.md`](personal-affinity.md).
+Le profil de goût, ses affinités de tags, ses pôles et ses priors sont
+documentés dans [`taste-profile.md`](taste-profile.md).

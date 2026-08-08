@@ -30,6 +30,59 @@ pub struct OfflineDataset {
 }
 
 impl OfflineDataset {
+    /// Construit un dataset depuis des objets métier déjà normalisés.
+    ///
+    /// Ce constructeur est le seam utilisé par les futurs adapters de
+    /// persistance. Il conserve les mêmes garanties d'ordre et d'intégrité que
+    /// l'import de fixtures.
+    ///
+    /// # Errors
+    ///
+    /// Refuse les identifiants catalogue ou notes dupliqués et toute note ou
+    /// événement qui référence une œuvre absente du catalogue.
+    pub fn from_parts(
+        mut catalog: Vec<NormalizedWork>,
+        mut ratings: Vec<RatingRecord>,
+        mut events: Vec<WatchEvent>,
+    ) -> Result<Self, DatasetError> {
+        let mut catalog_ids = HashSet::with_capacity(catalog.len());
+        for work in &catalog {
+            if !catalog_ids.insert(work.id()) {
+                return Err(DatasetError::DuplicateCatalogWork { work_id: work.id() });
+            }
+        }
+
+        let mut rating_ids = HashSet::with_capacity(ratings.len());
+        for rating in &ratings {
+            if !catalog_ids.contains(&rating.work_id()) {
+                return Err(DatasetError::UnknownRatingWork {
+                    work_id: rating.work_id(),
+                });
+            }
+            if !rating_ids.insert(rating.work_id()) {
+                return Err(DatasetError::DuplicateRating {
+                    work_id: rating.work_id(),
+                });
+            }
+        }
+        for event in &events {
+            if !catalog_ids.contains(&event.work_id()) {
+                return Err(DatasetError::UnknownEventWork {
+                    work_id: event.work_id(),
+                });
+            }
+        }
+
+        catalog.sort_by_key(NormalizedWork::id);
+        ratings.sort_by_key(RatingRecord::work_id);
+        events.sort_by_key(|event| (event.work_id(), event_order(event)));
+        Ok(Self {
+            catalog,
+            ratings,
+            events,
+        })
+    }
+
     /// Importe simultanément l'historique CSV et le snapshot catalogue JSON.
     ///
     /// Le CSV doit contenir exactement les colonnes `work_id`, `rating`,
@@ -110,6 +163,48 @@ impl OfflineDataset {
         }
     }
 }
+
+fn event_order(event: &WatchEvent) -> u8 {
+    match event {
+        WatchEvent::Completed { .. } => 0,
+        WatchEvent::Dropped { .. } => 1,
+        WatchEvent::Rewatched { .. } => 2,
+    }
+}
+
+/// Violation d'intégrité lors de l'assemblage d'un dataset normalisé.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DatasetError {
+    DuplicateCatalogWork { work_id: WorkId },
+    DuplicateRating { work_id: WorkId },
+    UnknownRatingWork { work_id: WorkId },
+    UnknownEventWork { work_id: WorkId },
+}
+
+impl fmt::Display for DatasetError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DuplicateCatalogWork { work_id } => {
+                write!(formatter, "duplicate catalog work {}", work_id.get())
+            }
+            Self::DuplicateRating { work_id } => {
+                write!(formatter, "duplicate rating for work {}", work_id.get())
+            }
+            Self::UnknownRatingWork { work_id } => {
+                write!(
+                    formatter,
+                    "rating references unknown work {}",
+                    work_id.get()
+                )
+            }
+            Self::UnknownEventWork { work_id } => {
+                write!(formatter, "event references unknown work {}", work_id.get())
+            }
+        }
+    }
+}
+
+impl Error for DatasetError {}
 
 /// Compteurs stables affichés par la CLI après un import réussi.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

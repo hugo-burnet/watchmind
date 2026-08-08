@@ -1,0 +1,20 @@
+{
+  "affinity": {
+    "rating_scale": 2.0,
+    "rewatch_weight": 0.4,
+    "rewatch_duration_reference_minutes": 300,
+    "rewatch_duration_factor_min": 0.5,
+    "rewatch_duration_factor_max": 2.0,
+    "drop_penalty_weight": 1.5,
+    "drop_curve_exponent": 1.5,
+    "good_rating_threshold": 7.0,
+    "good_but_not_for_me_multiplier": 0.5,
+    "neutral_band": 0.15
+  },
+  "tag_shrinkage": 2.0,
+  "minimum_history_for_clustering": 30,
+  "favorite_affinity_threshold": 0.25,
+  "dominant_tags_per_pole": 5,
+  "representative_works_per_pole": 3,
+  "minimum_axis_observations": 10
+}

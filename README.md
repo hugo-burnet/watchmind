@@ -39,3 +39,5 @@ Le contrat des fixtures et les diagnostics d'import sont décrits dans [`docs/of
 Le harness, les trois baselines et le contrat des rapports sont décrits dans [`docs/baseline-evaluation.md`](docs/baseline-evaluation.md).
 Le calcul d'affinité personnelle et sa configuration V1 sont décrits dans
 [`docs/personal-affinity.md`](docs/personal-affinity.md).
+La construction déterministe du profil de goût, ses pôles et ses fallbacks sont
+décrits dans [`docs/taste-profile.md`](docs/taste-profile.md).

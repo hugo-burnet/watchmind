@@ -7,6 +7,7 @@ mod affinity;
 mod domain;
 mod evaluation;
 mod import;
+mod profile;
 
 pub use affinity::{
     AffinityConfig, AffinityError, AffinityReport, PersonalAffinity, RatingSignalKind,
@@ -21,7 +22,11 @@ pub use evaluation::{
     BaselineKind, BaselineResult, EvaluationError, EvaluationMetrics, EvaluationReport, TargetRank,
     evaluate_baselines,
 };
-pub use import::{ImportError, ImportSummary, OfflineDataset};
+pub use import::{DatasetError, ImportError, ImportSummary, OfflineDataset};
+pub use profile::{
+    AxisProfile, AxisWeight, AxisWeightSource, PoleTag, ProfileError, ProfileMode, TagAffinity,
+    TastePole, TasteProfile, TasteProfileConfig, build_taste_profile,
+};
 
 /// Nom stable du moteur, partagé avec ses adaptateurs.
 #[must_use]
