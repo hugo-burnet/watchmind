@@ -1,0 +1,12 @@
+[package]
+name = "watchmind-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+watchmind-recommendation = { path = "../../crates/recommendation" }
+
+[lints]
+workspace = true
