@@ -6,6 +6,14 @@ WatchMind est un moteur personnel et explicable de recommandation d'anime. Le pr
 
 La toolchain stable et ses composants sont déclarés dans `rust-toolchain.toml`, avec Rust 1.97 comme version minimale du workspace. Après une nouvelle installation de Rust sous Windows, ouvrir un nouveau terminal si `cargo` n'est pas encore reconnu.
 
+### Développement sous Windows
+
+Smart App Control peut bloquer les exécutables non signés que Cargo génère dans
+`target/debug/deps`. Pour conserver cette protection tout en exécutant les tests
+de manière fiable, utiliser de préférence WSL et placer le dépôt dans son système
+de fichiers Linux, par exemple `~/projects/watchmind`, plutôt que sous `/mnt/c`.
+La désactivation globale de Smart App Control n'est pas requise pour WatchMind.
+
 ## Structure actuelle
 
 ```text
