@@ -4,12 +4,14 @@
 //! suivants. Cette crate ne dépendra ni de l'API, ni de `SQLite`, ni du frontend.
 
 mod domain;
+mod import;
 
 pub use domain::{
     AspectCredit, Contribution, ContributionSource, DomainError, DropProgress, NormalizedWork,
     PersonalAxis, Rating, RatingRecord, Ratio, RecommendationScore, ScoreDelta, TagWeight,
     WatchEvent, Weight, WorkId,
 };
+pub use import::{ImportError, ImportSummary, OfflineDataset};
 
 /// Nom stable du moteur, partagé avec ses adaptateurs.
 #[must_use]

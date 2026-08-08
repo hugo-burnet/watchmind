@@ -1,0 +1,5 @@
+work_id,rating,status,drop_position,total_episodes,rewatches
+1,9.5,completed,,,2
+2,8.5,completed,,,0
+3,6.0,completed,,,0
+4,4.0,dropped,3,24,0

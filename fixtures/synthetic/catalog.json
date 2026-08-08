@@ -1,0 +1,74 @@
+[
+  {
+    "id": 1,
+    "title": "Glass Horizon",
+    "global_score": 8.4,
+    "tags": [
+      { "name": "Drama", "weight": 0.9 },
+      { "name": "Psychological", "weight": 0.95 }
+    ]
+  },
+  {
+    "id": 2,
+    "title": "Orbit of Ash",
+    "global_score": 8.1,
+    "tags": [
+      { "name": "Mystery", "weight": 0.8 },
+      { "name": "Science Fiction", "weight": 0.85 }
+    ]
+  },
+  {
+    "id": 3,
+    "title": "Summer Frequency",
+    "global_score": 7.2,
+    "tags": [
+      { "name": "Slice of Life", "weight": 0.9 },
+      { "name": "Music", "weight": 0.75 }
+    ]
+  },
+  {
+    "id": 4,
+    "title": "Iron Crown Chronicle",
+    "global_score": 6.8,
+    "tags": [
+      { "name": "Action", "weight": 0.9 },
+      { "name": "Fantasy", "weight": 0.7 }
+    ]
+  },
+  {
+    "id": 5,
+    "title": "Silent Meridian",
+    "global_score": 8.0,
+    "tags": [
+      { "name": "Drama", "weight": 0.75 },
+      { "name": "Mystery", "weight": 0.85 }
+    ]
+  },
+  {
+    "id": 6,
+    "title": "Redshift Children",
+    "global_score": 7.9,
+    "tags": [
+      { "name": "Psychological", "weight": 0.8 },
+      { "name": "Science Fiction", "weight": 0.9 }
+    ]
+  },
+  {
+    "id": 7,
+    "title": "Lanterns at Noon",
+    "global_score": 7.5,
+    "tags": [
+      { "name": "Drama", "weight": 0.8 },
+      { "name": "Slice of Life", "weight": 0.7 }
+    ]
+  },
+  {
+    "id": 8,
+    "title": "The Ninth Current",
+    "global_score": 7.7,
+    "tags": [
+      { "name": "Fantasy", "weight": 0.65 },
+      { "name": "Mystery", "weight": 0.9 }
+    ]
+  }
+]
