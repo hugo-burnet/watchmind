@@ -1,8 +1,16 @@
-use std::{cmp::Ordering, collections::HashSet, error::Error, fmt};
+use std::{
+    cmp::Ordering,
+    collections::HashSet,
+    error::Error,
+    fmt::{self, Write as _},
+};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-use crate::{NormalizedWork, OfflineDataset, WorkId};
+use crate::{
+    DatasetError, NormalizedWork, OfflineDataset, ProfileError, RecommendationEngine, ScoringError,
+    TasteProfileConfig, WorkId, build_taste_profile,
+};
 
 const RANDOM_SEED: u64 = 42;
 const RELEVANT_RATING_THRESHOLD: f64 = 8.0;
@@ -11,6 +19,7 @@ const RELEVANT_RATING_THRESHOLD: f64 = 8.0;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BaselineKind {
+    WatchMind,
     Random,
     AnilistGlobalScore,
     TagOverlap,
@@ -19,6 +28,7 @@ pub enum BaselineKind {
 impl fmt::Display for BaselineKind {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.pad(match self {
+            Self::WatchMind => "watchmind",
             Self::Random => "random",
             Self::AnilistGlobalScore => "anilist_global_score",
             Self::TagOverlap => "tag_overlap",
@@ -196,13 +206,21 @@ impl Error for EvaluationError {}
 /// Retourne [`EvaluationError::NoRelevantRatings`] si aucune note ne peut servir
 /// de cible.
 pub fn evaluate_baselines(dataset: &OfflineDataset) -> Result<EvaluationReport, EvaluationError> {
-    let cases = evaluation_cases(dataset);
+    evaluate_baselines_with(dataset, RELEVANT_RATING_THRESHOLD, RANDOM_SEED)
+}
+
+fn evaluate_baselines_with(
+    dataset: &OfflineDataset,
+    relevant_rating_threshold: f64,
+    random_seed: u64,
+) -> Result<EvaluationReport, EvaluationError> {
+    let cases = evaluation_cases(dataset, relevant_rating_threshold);
     if cases.is_empty() {
         return Err(EvaluationError::NoRelevantRatings);
     }
 
     let rankers: [&dyn Ranker; 3] = [
-        &RandomRanker { seed: RANDOM_SEED },
+        &RandomRanker { seed: random_seed },
         &GlobalScoreRanker,
         &TagOverlapRanker,
     ];
@@ -213,8 +231,8 @@ pub fn evaluate_baselines(dataset: &OfflineDataset) -> Result<EvaluationReport, 
 
     Ok(EvaluationReport {
         configuration: EvaluationConfiguration {
-            random_seed: RANDOM_SEED,
-            relevant_rating_threshold: RELEVANT_RATING_THRESHOLD,
+            random_seed,
+            relevant_rating_threshold,
         },
         cases: cases.len(),
         baselines,
@@ -227,7 +245,10 @@ struct EvaluationCase<'a> {
     candidates: Vec<&'a NormalizedWork>,
 }
 
-fn evaluation_cases(dataset: &OfflineDataset) -> Vec<EvaluationCase<'_>> {
+fn evaluation_cases(
+    dataset: &OfflineDataset,
+    relevant_rating_threshold: f64,
+) -> Vec<EvaluationCase<'_>> {
     let rated_ids = dataset
         .ratings()
         .iter()
@@ -236,7 +257,7 @@ fn evaluation_cases(dataset: &OfflineDataset) -> Vec<EvaluationCase<'_>> {
     let relevant_ids = dataset
         .ratings()
         .iter()
-        .filter(|rating| rating.rating().get() >= RELEVANT_RATING_THRESHOLD)
+        .filter(|rating| rating.rating().get() >= relevant_rating_threshold)
         .map(crate::RatingRecord::work_id)
         .collect::<Vec<_>>();
 
@@ -426,6 +447,619 @@ fn target_count_as_f64(count: usize) -> f64 {
     f64::from(
         u32::try_from(count).expect("the harness cannot contain more targets than u32 identifiers"),
     )
+}
+
+/// Seuils qui transforment le rapport complet en verrou automatique.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct EvaluationThresholds {
+    minimum_recall_at_10_delta_vs_tags: f64,
+    minimum_mrr_delta_vs_tags: f64,
+}
+
+impl Default for EvaluationThresholds {
+    fn default() -> Self {
+        Self {
+            minimum_recall_at_10_delta_vs_tags: 0.0,
+            minimum_mrr_delta_vs_tags: 0.0,
+        }
+    }
+}
+
+/// Paire dont l'ordre relatif constitue un cas de regression personnel.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RegressionPair {
+    label: String,
+    preferred_work_id: WorkId,
+    other_work_id: WorkId,
+}
+
+/// Date externe utilisee uniquement pour les decoupages temporels du harness.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TemporalRating {
+    work_id: WorkId,
+    rated_on: String,
+}
+
+/// Configuration versionnee du rapport moteur V1.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct FullEvaluationConfig {
+    profile_version: String,
+    seed: u64,
+    relevant_rating_threshold: f64,
+    minimum_temporal_history: usize,
+    thresholds: EvaluationThresholds,
+    regression_pairs: Vec<RegressionPair>,
+    temporal_ratings: Vec<TemporalRating>,
+}
+
+impl Default for FullEvaluationConfig {
+    fn default() -> Self {
+        Self {
+            profile_version: "taste-profile-v1".to_owned(),
+            seed: RANDOM_SEED,
+            relevant_rating_threshold: RELEVANT_RATING_THRESHOLD,
+            minimum_temporal_history: 1,
+            thresholds: EvaluationThresholds::default(),
+            regression_pairs: Vec::new(),
+            temporal_ratings: Vec::new(),
+        }
+    }
+}
+
+/// Resultat d'une paire de regression, avec les deux scores traces.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RegressionResult {
+    label: String,
+    preferred_work_id: WorkId,
+    preferred_score: f64,
+    other_work_id: WorkId,
+    other_score: f64,
+    passed: bool,
+}
+
+/// Backtest chronologique. `available=false` signifie qu'aucune date n'a ete fournie.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TemporalBacktest {
+    available: bool,
+    cases: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    metrics: Option<EvaluationMetrics>,
+    target_ranks: Vec<TargetRank>,
+}
+
+impl TemporalBacktest {
+    #[must_use]
+    pub const fn available(&self) -> bool {
+        self.available
+    }
+
+    #[must_use]
+    pub const fn cases(&self) -> usize {
+        self.cases
+    }
+
+    #[must_use]
+    pub const fn metrics(&self) -> Option<EvaluationMetrics> {
+        self.metrics
+    }
+
+    #[must_use]
+    pub fn target_ranks(&self) -> &[TargetRank] {
+        &self.target_ranks
+    }
+}
+
+/// Rapport complet du moteur, directement utilisable comme verrou V1.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct FullEvaluationReport {
+    configuration: FullEvaluationConfig,
+    engine: BaselineResult,
+    baselines: EvaluationReport,
+    regressions: Vec<RegressionResult>,
+    temporal_backtest: TemporalBacktest,
+    passed: bool,
+    failures: Vec<String>,
+}
+
+impl FullEvaluationReport {
+    #[must_use]
+    pub const fn engine(&self) -> &BaselineResult {
+        &self.engine
+    }
+
+    #[must_use]
+    pub const fn baselines(&self) -> &EvaluationReport {
+        &self.baselines
+    }
+
+    #[must_use]
+    pub fn regressions(&self) -> &[RegressionResult] {
+        &self.regressions
+    }
+
+    #[must_use]
+    pub const fn temporal_backtest(&self) -> &TemporalBacktest {
+        &self.temporal_backtest
+    }
+
+    #[must_use]
+    pub const fn passed(&self) -> bool {
+        self.passed
+    }
+
+    #[must_use]
+    pub fn failures(&self) -> &[String] {
+        &self.failures
+    }
+
+    /// Serialise le rapport complet dans un JSON stable.
+    ///
+    /// # Errors
+    ///
+    /// Propage une erreur du serialiseur JSON.
+    pub fn to_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string_pretty(self)
+    }
+
+    #[must_use]
+    pub fn to_markdown(&self) -> String {
+        let engine = self.engine.metrics;
+        let verdict = if self.passed { "PASS" } else { "FAIL" };
+        let mut markdown = format!(
+            "# WatchMind evaluation - {verdict}\n\n- Profile version: `{}`\n- Seed: `{}`\n- Leave-one-out cases: `{}`\n\n## Ranking metrics\n\n| Ranker | Median rank | Recall@10 | Recall@20 | MRR |\n|---|---:|---:|---:|---:|\n| watchmind | {:.3} | {:.3} | {:.3} | {:.3} |\n",
+            self.configuration.profile_version,
+            self.configuration.seed,
+            self.engine.target_ranks.len(),
+            engine.median_rank,
+            engine.recall_at_10,
+            engine.recall_at_20,
+            engine.mean_reciprocal_rank,
+        );
+        for baseline in &self.baselines.baselines {
+            let baseline_metrics = baseline.metrics;
+            writeln!(
+                markdown,
+                "| {} | {:.3} | {:.3} | {:.3} | {:.3} |",
+                baseline.name,
+                baseline_metrics.median_rank,
+                baseline_metrics.recall_at_10,
+                baseline_metrics.recall_at_20,
+                baseline_metrics.mean_reciprocal_rank,
+            )
+            .expect("writing to a String cannot fail");
+        }
+        markdown.push_str("\n## Regression pairs\n\n");
+        if self.regressions.is_empty() {
+            markdown.push_str("No regression pair configured.\n");
+        } else {
+            for regression in &self.regressions {
+                let status = if regression.passed { "PASS" } else { "FAIL" };
+                writeln!(
+                    markdown,
+                    "- {status} - {}: {} ({:.6}) > {} ({:.6})",
+                    regression.label,
+                    regression.preferred_work_id.get(),
+                    regression.preferred_score,
+                    regression.other_work_id.get(),
+                    regression.other_score,
+                )
+                .expect("writing to a String cannot fail");
+            }
+        }
+        markdown.push_str("\n## Temporal backtest\n\n");
+        match self.temporal_backtest.metrics {
+            Some(temporal) => writeln!(
+                markdown,
+                "{} cases, median rank {:.3}, Recall@10 {:.3}, MRR {:.3}.",
+                self.temporal_backtest.cases,
+                temporal.median_rank,
+                temporal.recall_at_10,
+                temporal.mean_reciprocal_rank,
+            )
+            .expect("writing to a String cannot fail"),
+            None => markdown.push_str("Not available: no usable dated ratings were configured.\n"),
+        }
+        if !self.failures.is_empty() {
+            markdown.push_str("\n## Failures\n\n");
+            for failure in &self.failures {
+                writeln!(markdown, "- {failure}").expect("writing to a String cannot fail");
+            }
+        }
+        markdown
+    }
+}
+
+/// Erreur structurelle qui empeche l'evaluation complete de produire un rapport.
+#[derive(Debug)]
+pub enum FullEvaluationError {
+    InvalidConfiguration { field: &'static str, reason: String },
+    NoRelevantRatings,
+    UnknownWork { work_id: WorkId },
+    Dataset(DatasetError),
+    Profile(ProfileError),
+    Scoring(ScoringError),
+}
+
+impl fmt::Display for FullEvaluationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidConfiguration { field, reason } => {
+                write!(
+                    formatter,
+                    "invalid evaluation configuration {field}: {reason}"
+                )
+            }
+            Self::NoRelevantRatings => write!(formatter, "evaluation requires a relevant rating"),
+            Self::UnknownWork { work_id } => {
+                write!(
+                    formatter,
+                    "evaluation references unknown work {}",
+                    work_id.get()
+                )
+            }
+            Self::Dataset(error) => {
+                write!(formatter, "cannot assemble evaluation dataset: {error}")
+            }
+            Self::Profile(error) => write!(formatter, "cannot build evaluation profile: {error}"),
+            Self::Scoring(error) => write!(formatter, "cannot score evaluation case: {error}"),
+        }
+    }
+}
+
+impl Error for FullEvaluationError {}
+
+impl From<DatasetError> for FullEvaluationError {
+    fn from(error: DatasetError) -> Self {
+        Self::Dataset(error)
+    }
+}
+
+impl From<ProfileError> for FullEvaluationError {
+    fn from(error: ProfileError) -> Self {
+        Self::Profile(error)
+    }
+}
+
+impl From<ScoringError> for FullEvaluationError {
+    fn from(error: ScoringError) -> Self {
+        Self::Scoring(error)
+    }
+}
+
+/// Evalue le moteur, ses baselines, ses paires de regression et son backtest temporel.
+///
+/// # Errors
+///
+/// Refuse une configuration invalide, une reference inconnue ou un dataset qui
+/// ne permet pas de construire les profils requis.
+pub fn evaluate_full(
+    dataset: &OfflineDataset,
+    config: &FullEvaluationConfig,
+) -> Result<FullEvaluationReport, FullEvaluationError> {
+    validate_full_config(dataset, config)?;
+    let relevant_ids = dataset
+        .ratings()
+        .iter()
+        .filter(|rating| rating.rating().get() >= config.relevant_rating_threshold)
+        .map(crate::RatingRecord::work_id)
+        .collect::<Vec<_>>();
+    if relevant_ids.is_empty() {
+        return Err(FullEvaluationError::NoRelevantRatings);
+    }
+
+    let engine_ranks = relevant_ids
+        .iter()
+        .map(|target| rank_hidden_target(dataset, *target, None))
+        .collect::<Result<Vec<_>, FullEvaluationError>>()?;
+    let engine = BaselineResult {
+        name: BaselineKind::WatchMind,
+        metrics: metrics(&engine_ranks),
+        target_ranks: engine_ranks,
+    };
+    let baselines = evaluate_baselines_with(dataset, config.relevant_rating_threshold, config.seed)
+        .map_err(|_| FullEvaluationError::NoRelevantRatings)?;
+    let regressions = evaluate_regressions(dataset, config)?;
+    let temporal_backtest = evaluate_temporal(dataset, config)?;
+    let Some(tag_metrics) = baselines
+        .baselines
+        .iter()
+        .find(|baseline| baseline.name == BaselineKind::TagOverlap)
+        .map(|baseline| baseline.metrics)
+    else {
+        return Err(FullEvaluationError::InvalidConfiguration {
+            field: "baselines",
+            reason: "tag overlap baseline is missing".to_owned(),
+        });
+    };
+    let mut failures = Vec::new();
+    let recall_floor =
+        tag_metrics.recall_at_10 + config.thresholds.minimum_recall_at_10_delta_vs_tags;
+    if engine.metrics.recall_at_10 + f64::EPSILON < recall_floor {
+        failures.push(format!(
+            "WatchMind Recall@10 {:.3} is below required {:.3}",
+            engine.metrics.recall_at_10, recall_floor
+        ));
+    }
+    let mrr_floor = tag_metrics.mean_reciprocal_rank + config.thresholds.minimum_mrr_delta_vs_tags;
+    if engine.metrics.mean_reciprocal_rank + f64::EPSILON < mrr_floor {
+        failures.push(format!(
+            "WatchMind MRR {:.3} is below required {:.3}",
+            engine.metrics.mean_reciprocal_rank, mrr_floor
+        ));
+    }
+    failures.extend(
+        regressions
+            .iter()
+            .filter(|regression| !regression.passed)
+            .map(|regression| format!("regression pair failed: {}", regression.label)),
+    );
+
+    Ok(FullEvaluationReport {
+        configuration: config.clone(),
+        engine,
+        baselines,
+        regressions,
+        temporal_backtest,
+        passed: failures.is_empty(),
+        failures,
+    })
+}
+
+fn validate_full_config(
+    dataset: &OfflineDataset,
+    config: &FullEvaluationConfig,
+) -> Result<(), FullEvaluationError> {
+    if config.profile_version.trim().is_empty() {
+        return Err(FullEvaluationError::InvalidConfiguration {
+            field: "profile_version",
+            reason: "must not be empty".to_owned(),
+        });
+    }
+    if !config.relevant_rating_threshold.is_finite()
+        || !(0.0..=10.0).contains(&config.relevant_rating_threshold)
+    {
+        return Err(FullEvaluationError::InvalidConfiguration {
+            field: "relevant_rating_threshold",
+            reason: "must be between 0 and 10".to_owned(),
+        });
+    }
+    if config.minimum_temporal_history == 0 {
+        return Err(FullEvaluationError::InvalidConfiguration {
+            field: "minimum_temporal_history",
+            reason: "must be greater than zero".to_owned(),
+        });
+    }
+    for (field, value) in [
+        (
+            "thresholds.minimum_recall_at_10_delta_vs_tags",
+            config.thresholds.minimum_recall_at_10_delta_vs_tags,
+        ),
+        (
+            "thresholds.minimum_mrr_delta_vs_tags",
+            config.thresholds.minimum_mrr_delta_vs_tags,
+        ),
+    ] {
+        if !value.is_finite() {
+            return Err(FullEvaluationError::InvalidConfiguration {
+                field,
+                reason: "must be finite".to_owned(),
+            });
+        }
+    }
+    let catalog_ids = dataset
+        .catalog()
+        .iter()
+        .map(NormalizedWork::id)
+        .collect::<HashSet<_>>();
+    for work_id in config
+        .regression_pairs
+        .iter()
+        .flat_map(|pair| [pair.preferred_work_id, pair.other_work_id])
+        .chain(config.temporal_ratings.iter().map(|rating| rating.work_id))
+    {
+        if !catalog_ids.contains(&work_id) {
+            return Err(FullEvaluationError::UnknownWork { work_id });
+        }
+    }
+    let mut dated_ids = HashSet::new();
+    for rating in &config.temporal_ratings {
+        if !dated_ids.insert(rating.work_id) {
+            return Err(FullEvaluationError::InvalidConfiguration {
+                field: "temporal_ratings",
+                reason: format!("duplicate work {}", rating.work_id.get()),
+            });
+        }
+        if !valid_iso_date(&rating.rated_on) {
+            return Err(FullEvaluationError::InvalidConfiguration {
+                field: "temporal_ratings.rated_on",
+                reason: format!("{:?} is not a YYYY-MM-DD date", rating.rated_on),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn valid_iso_date(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
+        return false;
+    }
+    let digits = bytes
+        .iter()
+        .enumerate()
+        .all(|(index, byte)| matches!(index, 4 | 7) || byte.is_ascii_digit());
+    if !digits {
+        return false;
+    }
+    let year = value[0..4].parse::<u16>().unwrap_or(0);
+    let month = value[5..7].parse::<u8>().unwrap_or(0);
+    let day = value[8..10].parse::<u8>().unwrap_or(0);
+    if year == 0 || !(1..=12).contains(&month) {
+        return false;
+    }
+    let leap = year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400));
+    let days = match month {
+        2 if leap => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    };
+    (1..=days).contains(&day)
+}
+
+fn rank_hidden_target(
+    dataset: &OfflineDataset,
+    target: WorkId,
+    training_ids: Option<&HashSet<WorkId>>,
+) -> Result<TargetRank, FullEvaluationError> {
+    let ratings = dataset
+        .ratings()
+        .iter()
+        .filter(|rating| {
+            rating.work_id() != target
+                && training_ids.is_none_or(|ids| ids.contains(&rating.work_id()))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let rated_ids = ratings
+        .iter()
+        .map(crate::RatingRecord::work_id)
+        .collect::<HashSet<_>>();
+    let events = dataset
+        .events()
+        .iter()
+        .filter(|event| rated_ids.contains(&event.work_id()))
+        .cloned()
+        .collect::<Vec<_>>();
+    let training = OfflineDataset::from_parts(dataset.catalog().to_vec(), ratings, events)?;
+    let profile = build_taste_profile(&training, &TasteProfileConfig::default())?;
+    let candidates = training
+        .catalog()
+        .iter()
+        .filter(|work| !rated_ids.contains(&work.id()))
+        .cloned()
+        .collect::<Vec<_>>();
+    let ranking = RecommendationEngine::default().score_candidates(&profile, &candidates)?;
+    let position = ranking
+        .iter()
+        .position(|recommendation| recommendation.work_id() == target)
+        .ok_or(FullEvaluationError::UnknownWork { work_id: target })?;
+    let rank =
+        u32::try_from(position + 1).map_err(|_| FullEvaluationError::InvalidConfiguration {
+            field: "catalog",
+            reason: "contains too many works to rank".to_owned(),
+        })?;
+    Ok(TargetRank {
+        work_id: target,
+        rank,
+    })
+}
+
+fn evaluate_regressions(
+    dataset: &OfflineDataset,
+    config: &FullEvaluationConfig,
+) -> Result<Vec<RegressionResult>, FullEvaluationError> {
+    if config.regression_pairs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let profile = build_taste_profile(dataset, &TasteProfileConfig::default())?;
+    let works = dataset
+        .catalog()
+        .iter()
+        .map(|work| (work.id(), work.clone()))
+        .collect::<std::collections::HashMap<_, _>>();
+    config
+        .regression_pairs
+        .iter()
+        .map(|pair| {
+            let candidates = [
+                works
+                    .get(&pair.preferred_work_id)
+                    .expect("configuration work IDs were validated")
+                    .clone(),
+                works
+                    .get(&pair.other_work_id)
+                    .expect("configuration work IDs were validated")
+                    .clone(),
+            ];
+            let scored = RecommendationEngine::default().score_candidates(&profile, &candidates)?;
+            let score_for = |work_id| {
+                scored
+                    .iter()
+                    .find(|recommendation| recommendation.work_id() == work_id)
+                    .expect("both regression works were scored")
+                    .score()
+                    .total()
+            };
+            let preferred_score = score_for(pair.preferred_work_id);
+            let other_score = score_for(pair.other_work_id);
+            Ok(RegressionResult {
+                label: pair.label.clone(),
+                preferred_work_id: pair.preferred_work_id,
+                preferred_score,
+                other_work_id: pair.other_work_id,
+                other_score,
+                passed: preferred_score > other_score,
+            })
+        })
+        .collect()
+}
+
+fn evaluate_temporal(
+    dataset: &OfflineDataset,
+    config: &FullEvaluationConfig,
+) -> Result<TemporalBacktest, FullEvaluationError> {
+    if config.temporal_ratings.is_empty() {
+        return Ok(TemporalBacktest {
+            available: false,
+            cases: 0,
+            metrics: None,
+            target_ranks: Vec::new(),
+        });
+    }
+    let ratings = dataset
+        .ratings()
+        .iter()
+        .map(|rating| (rating.work_id(), rating))
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut dated = config.temporal_ratings.iter().collect::<Vec<_>>();
+    dated.sort_by(|left, right| {
+        left.rated_on
+            .cmp(&right.rated_on)
+            .then_with(|| left.work_id.cmp(&right.work_id))
+    });
+    let mut target_ranks = Vec::new();
+    for dated_rating in &dated {
+        let Some(rating) = ratings.get(&dated_rating.work_id) else {
+            continue;
+        };
+        let training_ids = dated
+            .iter()
+            .filter(|candidate| candidate.rated_on < dated_rating.rated_on)
+            .filter(|candidate| ratings.contains_key(&candidate.work_id))
+            .map(|candidate| candidate.work_id)
+            .collect::<HashSet<_>>();
+        if training_ids.len() >= config.minimum_temporal_history
+            && rating.rating().get() >= config.relevant_rating_threshold
+        {
+            target_ranks.push(rank_hidden_target(
+                dataset,
+                dated_rating.work_id,
+                Some(&training_ids),
+            )?);
+        }
+    }
+    let temporal_metrics = (!target_ranks.is_empty()).then(|| metrics(&target_ranks));
+    Ok(TemporalBacktest {
+        available: temporal_metrics.is_some(),
+        cases: target_ranks.len(),
+        metrics: temporal_metrics,
+        target_ranks,
+    })
 }
 
 #[cfg(test)]

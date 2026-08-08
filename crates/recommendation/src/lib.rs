@@ -29,8 +29,10 @@ pub use domain::{
     ScoreDelta, TagWeight, WatchEvent, Weight, WorkFormat, WorkId,
 };
 pub use evaluation::{
-    BaselineKind, BaselineResult, EvaluationError, EvaluationMetrics, EvaluationReport, TargetRank,
-    evaluate_baselines,
+    BaselineKind, BaselineResult, EvaluationError, EvaluationMetrics, EvaluationReport,
+    EvaluationThresholds, FullEvaluationConfig, FullEvaluationError, FullEvaluationReport,
+    RegressionPair, RegressionResult, TargetRank, TemporalBacktest, TemporalRating,
+    evaluate_baselines, evaluate_full,
 };
 pub use import::{DatasetError, ImportError, ImportSummary, OfflineDataset};
 pub use profile::{

@@ -1,0 +1,23 @@
+{
+  "profile_version": "taste-profile-v1",
+  "seed": 42,
+  "relevant_rating_threshold": 8.0,
+  "minimum_temporal_history": 2,
+  "thresholds": {
+    "minimum_recall_at_10_delta_vs_tags": 0.0,
+    "minimum_mrr_delta_vs_tags": 0.0
+  },
+  "regression_pairs": [
+    {
+      "label": "Silent Meridian > The Ninth Current",
+      "preferred_work_id": 5,
+      "other_work_id": 8
+    }
+  ],
+  "temporal_ratings": [
+    { "work_id": 4, "rated_on": "2022-01-10" },
+    { "work_id": 3, "rated_on": "2022-03-12" },
+    { "work_id": 2, "rated_on": "2022-05-14" },
+    { "work_id": 1, "rated_on": "2022-07-16" }
+  ]
+}
