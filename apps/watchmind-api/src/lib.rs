@@ -24,14 +24,16 @@ use watchmind_infrastructure::{
     AniListCatalog, Database, LibraryEntry, ProfileSnapshot, StorageError,
 };
 use watchmind_recommendation::{
-    AspectCredit, FullEvaluationConfig, OfflineDataset, Rating, RatingRecord, RecommendationEngine,
-    TasteProfileConfig, WatchEvent, WorkId, build_taste_profile, evaluate_full,
+    AspectCredit, CandidateRequest, FullEvaluationConfig, OfflineDataset, Rating, RatingRecord,
+    RecommendationEngine, TasteProfileConfig, TemporalRating, WatchEvent, WorkId,
+    build_taste_profile, evaluate_full, evaluate_pipeline_with_request,
 };
 
 type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 type SearchFuture = Pin<Box<dyn Future<Output = Result<CatalogResponse, String>> + Send>>;
 type Search = Arc<dyn Fn(String, u32, u8, u64) -> SearchFuture + Send + Sync>;
 type Discover = Arc<dyn Fn(u32, u8, u64) -> SearchFuture + Send + Sync>;
+type TaggedDiscover = Arc<dyn Fn(String, u32, u8, u64) -> SearchFuture + Send + Sync>;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CatalogResponse {
@@ -39,11 +41,20 @@ pub struct CatalogResponse {
     pub from_cache: bool,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct CatalogManifest {
+    source: &'static str,
+    generated_at_unix: u64,
+    discovery_tags: Vec<String>,
+    work_ids: Vec<WorkId>,
+}
+
 #[derive(Clone)]
 pub struct ApiState {
     database: Database,
     search: Search,
     discover: Discover,
+    discover_by_tag: TaggedDiscover,
     clock: Clock,
 }
 
@@ -65,6 +76,7 @@ impl ApiState {
     ) -> Self {
         let catalog = Arc::new(catalog);
         let search_catalog = Arc::clone(&catalog);
+        let discovery_catalog = Arc::clone(&catalog);
         Self {
             database,
             search: Arc::new(move |query, page, per_page, now| {
@@ -78,10 +90,20 @@ impl ApiState {
                 })
             }),
             discover: Arc::new(move |page, per_page, now| {
-                let catalog = Arc::clone(&catalog);
+                let catalog = Arc::clone(&discovery_catalog);
                 Box::pin(async move {
                     catalog
                         .discover(page, per_page, now)
+                        .await
+                        .map(|result| catalog_response(&result))
+                        .map_err(|error| error.to_string())
+                })
+            }),
+            discover_by_tag: Arc::new(move |tag, page, per_page, now| {
+                let catalog = Arc::clone(&catalog);
+                Box::pin(async move {
+                    catalog
+                        .discover_by_tag(&tag, page, per_page, now)
                         .await
                         .map(|result| catalog_response(&result))
                         .map_err(|error| error.to_string())
@@ -103,6 +125,7 @@ impl ApiState {
     {
         let search = Arc::new(search);
         let discovery = Arc::clone(&search);
+        let tagged_discovery = Arc::clone(&search);
         Self {
             database,
             search: Arc::new(move |query, page, per_page, now| {
@@ -110,6 +133,9 @@ impl ApiState {
             }),
             discover: Arc::new(move |page, per_page, now| {
                 Box::pin(discovery("__discover__".to_owned(), page, per_page, now))
+            }),
+            discover_by_tag: Arc::new(move |tag, page, per_page, now| {
+                Box::pin(tagged_discovery(tag, page, per_page, now))
             }),
             clock: Arc::new(clock),
         }
@@ -483,8 +509,10 @@ async fn upsert_rating(
 ) -> Result<Json<Value>, ApiError> {
     let id = work_id(raw_id)?;
     ensure_work(&state, id).await?;
-    let rating =
-        RatingRecord::new(id, input.rating, input.aspects).map_err(ApiError::bad_request)?;
+    let rated_at_unix = (state.clock)();
+    let rating = RatingRecord::new(id, input.rating, input.aspects)
+        .map_err(ApiError::bad_request)?
+        .with_rated_at_unix(rated_at_unix);
     let mut dataset = load_dataset(&state.database).await?;
     let mut ratings = dataset.ratings().to_vec();
     if let Some(existing) = ratings.iter_mut().find(|existing| existing.work_id() == id) {
@@ -502,7 +530,7 @@ async fn upsert_rating(
     let version = state
         .database
         .snapshots()
-        .create_for_rating(&rating, (state.clock)(), &profile_json, &score_json)
+        .create_for_rating(&rating, rated_at_unix, &profile_json, &score_json)
         .await?;
     Ok(Json(json!({ "profile_version": version })))
 }
@@ -570,7 +598,8 @@ async fn recommendations(State(state): State<ApiState>) -> Result<Json<Value>, A
         .iter()
         .map(watchmind_recommendation::NormalizedWork::id)
         .collect::<HashSet<_>>();
-    let visible_discovered = match discover_unseen(&state, &personal_ids, 50).await {
+    let discovery_tags = discovery_tags(&personal)?;
+    let visible_discovered = match discover_unseen(&state, &personal_ids, &discovery_tags).await {
         Ok(result) => result,
         Err(_) if current.is_some() => {
             let snapshot = current.expect("checked above");
@@ -581,6 +610,15 @@ async fn recommendations(State(state): State<ApiState>) -> Result<Json<Value>, A
         }
         Err(error) => return Err(ApiError::internal(error)),
     };
+    let manifest = catalog_manifest(&state, &discovery_tags, &personal_ids, &visible_discovered);
+    state
+        .database
+        .preferences()
+        .set(
+            "latest_catalog_manifest",
+            &serde_json::to_value(&manifest).map_err(ApiError::internal)?,
+        )
+        .await?;
     for work in &visible_discovered {
         state.database.works().upsert(work).await?;
     }
@@ -609,9 +647,11 @@ async fn recommendations(State(state): State<ApiState>) -> Result<Json<Value>, A
                 .await?
         }
     };
-    Ok(Json(
-        json!({ "profile_version": version, "recommendations": scores }),
-    ))
+    Ok(Json(json!({
+        "profile_version": version,
+        "catalog_manifest": manifest,
+        "recommendations": scores
+    })))
 }
 
 async fn historical_recommendations(
@@ -636,9 +676,11 @@ async fn evaluation(State(state): State<ApiState>) -> Result<Json<Value>, ApiErr
         .iter()
         .map(watchmind_recommendation::NormalizedWork::id)
         .collect::<HashSet<_>>();
-    let discovered = discover_unseen(&state, &personal_ids, 50)
+    let discovery_tags = discovery_tags(&personal)?;
+    let discovered = discover_unseen(&state, &personal_ids, &discovery_tags)
         .await
         .map_err(ApiError::internal)?;
+    let manifest = catalog_manifest(&state, &discovery_tags, &personal_ids, &discovered);
     let mut catalog = personal.catalog().to_vec();
     catalog.extend(discovered);
     let dataset = OfflineDataset::from_parts(
@@ -647,8 +689,31 @@ async fn evaluation(State(state): State<ApiState>) -> Result<Json<Value>, ApiErr
         personal.events().to_vec(),
     )
     .map_err(ApiError::bad_request)?;
-    let report =
-        evaluate_full(&dataset, &FullEvaluationConfig::default()).map_err(ApiError::bad_request)?;
+    let temporal_ratings = state
+        .database
+        .ratings()
+        .dated()
+        .await?
+        .into_iter()
+        .map(|(work_id, timestamp)| TemporalRating::new(work_id, unix_date(timestamp)))
+        .collect();
+    let evaluation_config = FullEvaluationConfig::default().with_temporal_ratings(temporal_ratings);
+    let report = evaluate_full(&dataset, &evaluation_config).map_err(ApiError::bad_request)?;
+    let reserve_sweep = [0.0, 0.1, 0.25, 0.5]
+        .into_iter()
+        .map(|popularity_reserve| {
+            let request: CandidateRequest = serde_json::from_value(json!({
+                "popularity_reserve": popularity_reserve
+            }))
+            .map_err(ApiError::internal)?;
+            let pipeline = evaluate_pipeline_with_request(&dataset, 8.0, &request)
+                .map_err(ApiError::bad_request)?;
+            Ok(json!({
+                "popularity_reserve": popularity_reserve,
+                "pipeline": pipeline
+            }))
+        })
+        .collect::<Result<Vec<_>, ApiError>>()?;
     let mut payload = serde_json::to_value(report.baselines()).map_err(ApiError::internal)?;
     payload
         .as_object_mut()
@@ -657,25 +722,94 @@ async fn evaluation(State(state): State<ApiState>) -> Result<Json<Value>, ApiErr
             "engine".to_owned(),
             serde_json::to_value(report.engine()).map_err(ApiError::internal)?,
         );
+    payload
+        .as_object_mut()
+        .expect("an evaluation report always serializes as an object")
+        .insert(
+            "pipeline".to_owned(),
+            serde_json::to_value(report.pipeline()).map_err(ApiError::internal)?,
+        );
+    let object = payload
+        .as_object_mut()
+        .expect("an evaluation report always serializes as an object");
+    object.insert(
+        "catalog_manifest".to_owned(),
+        serde_json::to_value(manifest).map_err(ApiError::internal)?,
+    );
+    object.insert("popularity_reserve_sweep".to_owned(), json!(reserve_sweep));
+    object.insert(
+        "temporal_backtest".to_owned(),
+        serde_json::to_value(report.temporal_backtest()).map_err(ApiError::internal)?,
+    );
     Ok(Json(payload))
+}
+
+fn catalog_manifest(
+    state: &ApiState,
+    discovery_tags: &[String],
+    personal_ids: &HashSet<WorkId>,
+    works: &[watchmind_recommendation::NormalizedWork],
+) -> CatalogManifest {
+    let mut work_ids = personal_ids
+        .iter()
+        .copied()
+        .chain(
+            works
+                .iter()
+                .map(watchmind_recommendation::NormalizedWork::id),
+        )
+        .collect::<Vec<_>>();
+    work_ids.sort_unstable();
+    CatalogManifest {
+        source: "anilist_live",
+        generated_at_unix: (state.clock)(),
+        discovery_tags: discovery_tags.to_vec(),
+        work_ids,
+    }
+}
+
+fn unix_date(timestamp: u64) -> String {
+    let days = i64::try_from(timestamp / 86_400).unwrap_or(i64::MAX);
+    let shifted = days + 719_468;
+    let era = if shifted >= 0 {
+        shifted
+    } else {
+        shifted - 146_096
+    } / 146_097;
+    let day_of_era = shifted - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let mut year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
+    year += i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}")
 }
 
 async fn discover_unseen(
     state: &ApiState,
     excluded: &HashSet<WorkId>,
-    target_count: usize,
+    tags: &[String],
 ) -> Result<Vec<watchmind_recommendation::NormalizedWork>, String> {
     let mut works = Vec::new();
     let mut seen = excluded.clone();
-    for page in 1..=10 {
-        let response = match (state.discover)(page, 50, (state.clock)()).await {
+    let mut queries = vec![(None, 1), (None, 2)];
+    for tag in tags {
+        queries.push((Some(tag.as_str()), 1));
+        queries.push((Some(tag.as_str()), 2));
+    }
+    for (tag, page) in queries {
+        let response = match tag {
+            Some(tag) => (state.discover_by_tag)(tag.to_owned(), page, 50, (state.clock)()).await,
+            None => (state.discover)(page, 50, (state.clock)()).await,
+        };
+        let response = match response {
             Ok(response) => response,
             Err(error) if works.is_empty() => return Err(error),
-            Err(_) => break,
+            Err(_) => continue,
         };
-        if response.works.is_empty() {
-            break;
-        }
         for work in response.works {
             if seen.insert(work.id())
                 && state
@@ -687,13 +821,31 @@ async fn discover_unseen(
                     .is_none()
             {
                 works.push(work);
-                if works.len() >= target_count {
-                    return Ok(works);
-                }
             }
         }
     }
     Ok(works)
+}
+
+fn discovery_tags(dataset: &OfflineDataset) -> Result<Vec<String>, ApiError> {
+    if dataset.ratings().is_empty() {
+        return Ok(Vec::new());
+    }
+    let profile = build_taste_profile(dataset, &TasteProfileConfig::default())
+        .map_err(ApiError::bad_request)?;
+    let mut tags = profile
+        .tag_affinities()
+        .iter()
+        .filter(|tag| tag.value() > 0.0)
+        .map(|tag| (tag.name().to_owned(), tag.value() * tag.confidence().get()))
+        .collect::<Vec<_>>();
+    tags.sort_by(|(left_name, left), (right_name, right)| {
+        right
+            .total_cmp(left)
+            .then_with(|| left_name.cmp(right_name))
+    });
+    tags.truncate(4);
+    Ok(tags.into_iter().map(|(name, _)| name).collect())
 }
 
 fn calculate_snapshot(dataset: &OfflineDataset) -> Result<(Value, Vec<Value>), ApiError> {
@@ -832,6 +984,18 @@ fn normalize_comment(comment: Option<String>) -> Option<String> {
     comment
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::unix_date;
+
+    #[test]
+    fn converts_unix_days_to_iso_dates() {
+        assert_eq!(unix_date(0), "1970-01-01");
+        assert_eq!(unix_date(1_700_000_000), "2023-11-14");
+        assert_eq!(unix_date(1_772_323_200), "2026-03-01");
+    }
 }
 
 #[derive(Debug)]

@@ -51,6 +51,20 @@ La confiance globale du profil combine le volume de l'historique, plafonné au
 seuil de clustering, et la part des œuvres observées qui possèdent au moins un
 tag.
 
+## Décroissance temporelle
+
+Les notes créées depuis l'application portent leur date Unix réelle. Les
+preuves datées perdent la moitié de leur poids après
+`temporal_half_life_days`, soit 365 jours par défaut, relativement à la note
+datée la plus récente. Cette pondération agit sur l'apprentissage des tags et
+sur l'appartenance aux pôles ; elle rapproche progressivement les anciens goûts
+de zéro sans changer leur signe.
+
+Une note historique sans date conserve un poids de `1`. WatchMind ne déduit
+jamais une chronologie de l'ordre d'import et n'attribue donc aucune fausse date
+aux données existantes. À mesure que de nouvelles notes datées s'accumulent, le
+backtest temporel de l'écran Évaluation devient automatiquement disponible.
+
 ## Pôles de goût
 
 Avec moins de 30 œuvres par défaut, `ProfileMode::SparseHistory` rend le

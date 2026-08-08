@@ -28,6 +28,7 @@ pub struct TasteProfileConfig {
     dominant_tags_per_pole: usize,
     representative_works_per_pole: usize,
     minimum_axis_observations: usize,
+    temporal_half_life_days: f64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -41,6 +42,7 @@ struct TasteProfileConfigData {
     dominant_tags_per_pole: usize,
     representative_works_per_pole: usize,
     minimum_axis_observations: usize,
+    temporal_half_life_days: f64,
 }
 
 impl Default for TasteProfileConfigData {
@@ -54,6 +56,7 @@ impl Default for TasteProfileConfigData {
             dominant_tags_per_pole: 5,
             representative_works_per_pole: 3,
             minimum_axis_observations: 10,
+            temporal_half_life_days: 365.0,
         }
     }
 }
@@ -97,6 +100,7 @@ impl TryFrom<TasteProfileConfigData> for TasteProfileConfig {
             data.representative_works_per_pole,
         )?;
         validate_positive_count("minimum_axis_observations", data.minimum_axis_observations)?;
+        validate_positive("temporal_half_life_days", data.temporal_half_life_days)?;
         Ok(Self {
             affinity: data.affinity,
             tag_shrinkage: data.tag_shrinkage,
@@ -106,6 +110,7 @@ impl TryFrom<TasteProfileConfigData> for TasteProfileConfig {
             dominant_tags_per_pole: data.dominant_tags_per_pole,
             representative_works_per_pole: data.representative_works_per_pole,
             minimum_axis_observations: data.minimum_axis_observations,
+            temporal_half_life_days: data.temporal_half_life_days,
         })
     }
 }
@@ -432,6 +437,12 @@ pub fn build_taste_profile(
         .iter()
         .map(|work| (work.id(), work))
         .collect::<HashMap<_, _>>();
+    let rating_dates = dataset
+        .ratings()
+        .iter()
+        .filter_map(|rating| rating.rated_at_unix().map(|date| (rating.work_id(), date)))
+        .collect::<HashMap<_, _>>();
+    let latest_rating = rating_dates.values().copied().max();
 
     let vectors = affinity_report
         .affinities()
@@ -442,7 +453,14 @@ pub fn build_taste_profile(
                     work_id: affinity.work_id(),
                 },
             )?;
-            Ok(WorkVector::new(work, affinity.value()))
+            let temporal_weight = latest_rating
+                .zip(rating_dates.get(&affinity.work_id()).copied())
+                .map_or(1.0, |(latest, rated_at)| {
+                    #[allow(clippy::cast_precision_loss)]
+                    let age_days = latest.saturating_sub(rated_at) as f64 / 86_400.0;
+                    0.5_f64.powf(age_days / config.temporal_half_life_days)
+                });
+            Ok(WorkVector::new(work, affinity.value(), temporal_weight))
         })
         .collect::<Result<Vec<_>, ProfileError>>()?;
 
@@ -492,13 +510,14 @@ fn learn_tag_affinities(
                     total_weight: 0.0,
                     observed_works: 0,
                 });
-            entry.weighted_target += weight * work.affinity;
+            let evidence_weight = weight * work.temporal_weight;
+            entry.weighted_target += evidence_weight * work.raw_affinity;
             if !entry.weighted_target.is_finite() {
                 return Err(ProfileError::InvalidComputedValue {
                     field: "tag_affinity",
                 });
             }
-            entry.total_weight += weight;
+            entry.total_weight += evidence_weight;
             entry.observed_works += 1;
         }
     }
@@ -569,14 +588,18 @@ fn profile_confidence(
 struct WorkVector {
     work_id: WorkId,
     affinity: f64,
+    raw_affinity: f64,
+    temporal_weight: f64,
     tags: BTreeMap<String, f64>,
 }
 
 impl WorkVector {
-    fn new(work: &NormalizedWork, affinity: f64) -> Self {
+    fn new(work: &NormalizedWork, affinity: f64, temporal_weight: f64) -> Self {
         Self {
             work_id: work.id(),
-            affinity,
+            affinity: affinity * temporal_weight,
+            raw_affinity: affinity,
+            temporal_weight,
             tags: work
                 .tags()
                 .iter()

@@ -51,6 +51,10 @@ export type EvaluationReport = {
   cases: number;
   configuration: { random_seed: number; relevant_rating_threshold: number };
   engine: EvaluationResult;
+  pipeline: { cases: number; retrieved: number; retrieval_recall: number; listed: number; list_recall: number };
+  catalog_manifest: { source: "anilist_live"; generated_at_unix: number; discovery_tags: string[]; work_ids: number[] };
+  popularity_reserve_sweep: { popularity_reserve: number; pipeline: { cases: number; retrieved: number; retrieval_recall: number; listed: number; list_recall: number } }[];
+  temporal_backtest: { available: boolean; cases: number; metrics?: { median_rank: number; recall_at_10: number; recall_at_20: number; mean_reciprocal_rank: number } };
   baselines: { name: "random" | "anilist_global_score" | "tag_overlap"; metrics: { median_rank: number; recall_at_10: number; recall_at_20: number; mean_reciprocal_rank: number }; target_ranks: { work_id: number; rank: number }[] }[];
 };
 
@@ -89,7 +93,7 @@ export const api = {
     }),
   event: (id: number, event: WatchEvent) =>
     request<void>(`/api/library/${id}/events`, { method: "POST", body: JSON.stringify(event) }),
-  recommendations: () => request<{ profile_version: number; recommendations: Recommendation[] }>("/api/recommendations"),
+  recommendations: () => request<{ profile_version: number; catalog_manifest?: EvaluationReport["catalog_manifest"]; recommendations: Recommendation[] }>("/api/recommendations"),
   historicalRecommendations: (version: number) => request<{ profile_version: number; recommendations: Recommendation[] }>(`/api/profile/${version}/recommendations`),
   feedback: (id: number, helpful: boolean) => request<void>(`/api/recommendations/${id}/feedback`, { method: "POST", body: JSON.stringify({ helpful }) }),
   profile: () => request<ProfileSnapshot>("/api/profile"),

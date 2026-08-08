@@ -29,6 +29,15 @@ const DISCOVER_QUERY: &str = r"query DiscoverAnime($page: Int!, $perPage: Int!) 
   }
 }";
 
+const DISCOVER_TAG_QUERY: &str = r"query DiscoverAnimeByTag($tag: String!, $page: Int!, $perPage: Int!) {
+  Page(page: $page, perPage: $perPage) {
+    media(type: ANIME, tag: $tag, sort: [SCORE_DESC, POPULARITY_DESC], status: FINISHED) {
+      id title { userPreferred romaji english native } averageScore duration episodes format
+      startDate { year } tags { name rank isMediaSpoiler } studios(isMain: true) { nodes { name } }
+    }
+  }
+}";
+
 #[derive(Debug, thiserror::Error)]
 pub enum AniListError {
     #[error("AniList request failed: {0}")]
@@ -245,6 +254,53 @@ impl AniListCatalog {
             from_cache: false,
         })
     }
+
+    /// Charge une page `AniList` portant un tag précis. Cette requête permet de
+    /// construire un pool à la demande sans répliquer le catalogue `AniList`.
+    /// # Errors
+    /// Retourne les erreurs réseau, cache, JSON ou de normalisation.
+    pub async fn discover_by_tag(
+        &self,
+        tag: &str,
+        page: u32,
+        per_page: u8,
+        now_unix: u64,
+    ) -> Result<SearchResult, AniListError> {
+        let tag = tag.trim();
+        let per_page = per_page.clamp(1, 50);
+        let page = page.max(1);
+        let key = self
+            .cache
+            .path_for(&format!("__discover_tag__:{tag}"), page, per_page);
+        if let Some(payload) = self.cache.read(&key, now_unix).await? {
+            return Ok(SearchResult {
+                works: AniListNormalizer::normalize(&payload)?,
+                from_cache: true,
+            });
+        }
+        let payload = self
+            .client
+            .post(&self.endpoint)
+            .json(&DiscoverTagGraphQlRequest {
+                query: DISCOVER_TAG_QUERY,
+                variables: DiscoverTagVariables {
+                    tag,
+                    page,
+                    per_page,
+                },
+            })
+            .send()
+            .await?
+            .error_for_status()?
+            .text()
+            .await?;
+        let works = AniListNormalizer::normalize(&payload)?;
+        self.cache.write(&key, now_unix, &payload).await?;
+        Ok(SearchResult {
+            works,
+            from_cache: false,
+        })
+    }
 }
 
 fn normalize_media(media: Media) -> Result<NormalizedWork, AniListError> {
@@ -319,8 +375,20 @@ struct DiscoverGraphQlRequest {
     variables: DiscoverVariables,
 }
 #[derive(Serialize)]
+struct DiscoverTagGraphQlRequest<'a> {
+    query: &'static str,
+    variables: DiscoverTagVariables<'a>,
+}
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DiscoverVariables {
+    page: u32,
+    per_page: u8,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DiscoverTagVariables<'a> {
+    tag: &'a str,
     page: u32,
     per_page: u8,
 }

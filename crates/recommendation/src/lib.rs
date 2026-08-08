@@ -32,7 +32,7 @@ pub use evaluation::{
     BaselineKind, BaselineResult, EvaluationError, EvaluationMetrics, EvaluationReport,
     EvaluationThresholds, FullEvaluationConfig, FullEvaluationError, FullEvaluationReport,
     PipelineEvaluation, RegressionPair, RegressionResult, TargetRank, TemporalBacktest,
-    TemporalRating, evaluate_baselines, evaluate_full,
+    TemporalRating, evaluate_baselines, evaluate_full, evaluate_pipeline_with_request,
 };
 pub use import::{DatasetError, ImportError, ImportSummary, OfflineDataset};
 pub use profile::{

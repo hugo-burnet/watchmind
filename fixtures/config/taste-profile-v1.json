@@ -19,5 +19,6 @@
   "favorite_affinity_threshold": 0.25,
   "dominant_tags_per_pole": 5,
   "representative_works_per_pole": 3,
-  "minimum_axis_observations": 10
+  "minimum_axis_observations": 10,
+  "temporal_half_life_days": 365.0
 }

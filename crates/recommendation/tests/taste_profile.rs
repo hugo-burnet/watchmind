@@ -94,6 +94,28 @@ fn sparse_history_uses_one_explicit_fallback_pole_and_axis_prior() {
 }
 
 #[test]
+fn dated_evidence_loses_half_its_weight_after_one_year() {
+    let dataset = imported_dataset(&[(1, 10.0, &[("Ancien", 1.0)]), (2, 10.0, &[("Recent", 1.0)])]);
+    let ratings = dataset
+        .ratings()
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(index, rating)| rating.with_rated_at_unix(index as u64 * 365 * 86_400))
+        .collect();
+    let dated = OfflineDataset::from_parts(
+        dataset.catalog().to_vec(),
+        ratings,
+        dataset.events().to_vec(),
+    )
+    .unwrap();
+    let profile = build_taste_profile(&dated, &TasteProfileConfig::default()).unwrap();
+
+    assert!((profile.tag_affinity("ancien").unwrap().evidence_weight() - 0.5).abs() < 1.0e-12);
+    assert!((profile.tag_affinity("recent").unwrap().evidence_weight() - 1.0).abs() < 1.0e-12);
+}
+
+#[test]
 fn synthetic_profile_recovers_two_expected_poles_deterministically() {
     let dataset = clustered_dataset();
     let first = build_taste_profile(&dataset, &TasteProfileConfig::default()).unwrap();

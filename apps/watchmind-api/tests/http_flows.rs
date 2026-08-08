@@ -256,10 +256,19 @@ async fn database_backup_can_be_exported_cleared_and_restored() {
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = call(
+        &app,
+        "PUT",
+        "/api/library/1535/rating",
+        Some(json!({ "rating": 9.0 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
 
     let (status, backup) = call(&app, "GET", "/api/database", None).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(backup["version"], 2);
+    assert_eq!(backup["version"], 3);
+    assert_eq!(backup["rating_dates"][0], json!([1535, 0]));
 
     let (status, _) = call(&app, "DELETE", "/api/database", None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);

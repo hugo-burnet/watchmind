@@ -690,6 +690,8 @@ pub struct RatingRecord {
     work_id: WorkId,
     rating: Rating,
     aspects: Vec<AspectCredit>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rated_at_unix: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -698,6 +700,8 @@ struct RatingRecordData {
     rating: Rating,
     #[serde(default)]
     aspects: Vec<AspectCredit>,
+    #[serde(default)]
+    rated_at_unix: Option<u64>,
 }
 
 impl RatingRecord {
@@ -722,6 +726,7 @@ impl RatingRecord {
             work_id,
             rating,
             aspects,
+            rated_at_unix: None,
         })
     }
 
@@ -741,6 +746,17 @@ impl RatingRecord {
     }
 
     #[must_use]
+    pub const fn rated_at_unix(&self) -> Option<u64> {
+        self.rated_at_unix
+    }
+
+    #[must_use]
+    pub const fn with_rated_at_unix(mut self, rated_at_unix: u64) -> Self {
+        self.rated_at_unix = Some(rated_at_unix);
+        self
+    }
+
+    #[must_use]
     pub fn credit_for(&self, axis: PersonalAxis) -> Option<Weight> {
         self.aspects
             .iter()
@@ -753,7 +769,10 @@ impl TryFrom<RatingRecordData> for RatingRecord {
     type Error = DomainError;
 
     fn try_from(data: RatingRecordData) -> Result<Self, Self::Error> {
-        Self::new(data.work_id, data.rating, data.aspects)
+        let record = Self::new(data.work_id, data.rating, data.aspects)?;
+        Ok(data.rated_at_unix.map_or(record.clone(), |timestamp| {
+            record.with_rated_at_unix(timestamp)
+        }))
     }
 }
 

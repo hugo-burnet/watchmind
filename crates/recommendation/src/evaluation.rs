@@ -515,6 +515,16 @@ pub struct TemporalRating {
     rated_on: String,
 }
 
+impl TemporalRating {
+    #[must_use]
+    pub fn new(work_id: WorkId, rated_on: impl Into<String>) -> Self {
+        Self {
+            work_id,
+            rated_on: rated_on.into(),
+        }
+    }
+}
+
 /// Configuration versionnee du rapport moteur V1.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -539,6 +549,14 @@ impl Default for FullEvaluationConfig {
             regression_pairs: Vec::new(),
             temporal_ratings: Vec::new(),
         }
+    }
+}
+
+impl FullEvaluationConfig {
+    #[must_use]
+    pub fn with_temporal_ratings(mut self, temporal_ratings: Vec<TemporalRating>) -> Self {
+        self.temporal_ratings = temporal_ratings;
+        self
     }
 }
 
@@ -1011,8 +1029,39 @@ fn evaluate_pipeline(
     dataset: &OfflineDataset,
     relevant_ids: &[WorkId],
 ) -> Result<PipelineEvaluation, FullEvaluationError> {
-    let engine = RecommendationEngine::default();
     let request = crate::CandidateRequest::default();
+    evaluate_pipeline_with(dataset, relevant_ids, &request)
+}
+
+/// Mesure le retrieval et la liste finale avec une requête de candidats donnée.
+///
+/// Ce point d'entrée sert aux expériences de paramètres : le profil est
+/// reconstruit pour chaque cible exactement comme dans l'évaluation complète.
+/// # Errors
+/// Refuse un dataset sans note pertinente ou impossible à reconstruire.
+pub fn evaluate_pipeline_with_request(
+    dataset: &OfflineDataset,
+    relevant_rating_threshold: f64,
+    request: &crate::CandidateRequest,
+) -> Result<PipelineEvaluation, FullEvaluationError> {
+    let relevant_ids = dataset
+        .ratings()
+        .iter()
+        .filter(|rating| rating.rating().get() >= relevant_rating_threshold)
+        .map(crate::RatingRecord::work_id)
+        .collect::<Vec<_>>();
+    if relevant_ids.is_empty() {
+        return Err(FullEvaluationError::NoRelevantRatings);
+    }
+    evaluate_pipeline_with(dataset, &relevant_ids, request)
+}
+
+fn evaluate_pipeline_with(
+    dataset: &OfflineDataset,
+    relevant_ids: &[WorkId],
+    request: &crate::CandidateRequest,
+) -> Result<PipelineEvaluation, FullEvaluationError> {
+    let engine = RecommendationEngine::default();
     let diversification = crate::DiversificationConfig::default();
     let mut retrieved = 0;
     let mut listed = 0;
@@ -1020,7 +1069,7 @@ fn evaluate_pipeline(
     for target in relevant_ids {
         let (training, _) = training_split(dataset, *target, None)?;
         let profile = build_taste_profile(&training, &TasteProfileConfig::default())?;
-        let candidates = engine.generate_candidates_for(&training, &request, Some(&profile));
+        let candidates = engine.generate_candidates_for(&training, request, Some(&profile));
         if !candidates.works().iter().any(|work| work.id() == *target) {
             continue;
         }

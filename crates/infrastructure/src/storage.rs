@@ -110,9 +110,10 @@ impl Database {
     /// Retourne une erreur de lecture SQL ou de sérialisation.
     pub async fn export_bytes(&self) -> Result<Vec<u8>, StorageError> {
         let backup = Backup {
-            version: 2,
+            version: 3,
             works: self.works().all().await?,
             ratings: self.ratings().all().await?,
+            rating_dates: self.ratings().dated().await?,
             events: self.events().all().await?,
             preferences: self.preferences().all().await?,
             library: self.library().all().await?,
@@ -133,7 +134,7 @@ impl Database {
     /// Refuse un export invalide et annule alors toute la transaction.
     pub async fn restore_bytes(&self, bytes: &[u8]) -> Result<(), StorageError> {
         let backup: Backup = serde_json::from_slice(bytes)?;
-        if !matches!(backup.version, 1 | 2) {
+        if !matches!(backup.version, 1..=3) {
             return Err(StorageError::UnsupportedBackup(backup.version));
         }
         let mut transaction = self.pool.begin().await?;
@@ -150,7 +151,10 @@ impl Database {
             upsert_work(&mut transaction, work).await?;
         }
         for rating in &backup.ratings {
-            upsert_rating(&mut transaction, rating).await?;
+            let rated_at_unix = backup.rating_dates.iter().find_map(|(work_id, timestamp)| {
+                (*work_id == rating.work_id()).then_some(*timestamp)
+            });
+            upsert_rating(&mut transaction, rating, rated_at_unix).await?;
         }
         for event in &backup.events {
             insert_event(&mut transaction, event).await?;
@@ -218,7 +222,7 @@ impl Database {
             upsert_work(&mut transaction, work).await?;
         }
         for rating in dataset.ratings() {
-            upsert_rating(&mut transaction, rating).await?;
+            upsert_rating(&mut transaction, rating, None).await?;
         }
         for event in dataset.events() {
             insert_event(&mut transaction, event).await?;
@@ -323,7 +327,7 @@ impl SnapshotRepository {
     ) -> Result<i64, StorageError> {
         let timestamp = snapshot_timestamp(created_at_unix)?;
         let mut tx = self.0.begin().await?;
-        upsert_rating(&mut tx, rating).await?;
+        upsert_rating(&mut tx, rating, Some(created_at_unix)).await?;
         let version = insert_snapshot(&mut tx, timestamp, profile, scores).await?;
         tx.commit().await?;
         Ok(version)
@@ -540,31 +544,32 @@ impl RatingRepository {
     /// Retourne une erreur SQL ou de validation métier.
     pub async fn upsert(&self, record: &RatingRecord) -> Result<(), StorageError> {
         let mut tx = self.0.begin().await?;
-        upsert_rating(&mut tx, record).await?;
+        upsert_rating(&mut tx, record, None).await?;
         tx.commit().await?;
         Ok(())
     }
     /// # Errors
     /// Retourne une erreur SQL ou si les données persistées sont invalides.
     pub async fn get(&self, id: WorkId) -> Result<Option<RatingRecord>, StorageError> {
-        let Some(value) =
-            sqlx::query_scalar::<_, f64>("SELECT rating FROM ratings WHERE work_id = ?")
-                .bind(i64::from(id.get()))
-                .fetch_optional(&self.0)
-                .await?
+        let Some(row) = sqlx::query("SELECT rating, rated_at_unix FROM ratings WHERE work_id = ?")
+            .bind(i64::from(id.get()))
+            .fetch_optional(&self.0)
+            .await?
         else {
             return Ok(None);
         };
-        Ok(Some(RatingRecord::new(
+        let record = RatingRecord::new(
             id,
-            Rating::new(value)?,
+            Rating::new(row.try_get("rating")?)?,
             load_aspects(&self.0, id).await?,
-        )?))
+        )?;
+        Ok(Some(with_stored_rating_date(record, &row)?))
     }
     async fn all(&self) -> Result<Vec<RatingRecord>, StorageError> {
-        let rows = sqlx::query("SELECT work_id, rating FROM ratings ORDER BY work_id")
-            .fetch_all(&self.0)
-            .await?;
+        let rows =
+            sqlx::query("SELECT work_id, rating, rated_at_unix FROM ratings ORDER BY work_id")
+                .fetch_all(&self.0)
+                .await?;
         let mut records = Vec::with_capacity(rows.len());
         for row in rows {
             let id = WorkId::new(u32::try_from(row.try_get::<i64, _>("work_id")?).map_err(
@@ -573,13 +578,44 @@ impl RatingRepository {
                     reason: "must fit u32",
                 },
             )?)?;
-            records.push(RatingRecord::new(
+            let record = RatingRecord::new(
                 id,
                 Rating::new(row.try_get("rating")?)?,
                 load_aspects(&self.0, id).await?,
-            )?);
+            )?;
+            records.push(with_stored_rating_date(record, &row)?);
         }
         Ok(records)
+    }
+
+    /// Retourne uniquement les notes dont la date réelle a été collectée.
+    /// Les imports historiques restent explicitement sans date.
+    /// # Errors
+    /// Retourne une erreur SQL ou si une valeur persistée est invalide.
+    pub async fn dated(&self) -> Result<Vec<(WorkId, u64)>, StorageError> {
+        let rows = sqlx::query(
+            "SELECT work_id, rated_at_unix FROM ratings WHERE rated_at_unix IS NOT NULL ORDER BY rated_at_unix, work_id",
+        )
+        .fetch_all(&self.0)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                let id = u32::try_from(row.try_get::<i64, _>("work_id")?).map_err(|_| {
+                    DomainError::InvalidValue {
+                        field: "work_id",
+                        reason: "must fit u32",
+                    }
+                })?;
+                let timestamp =
+                    u64::try_from(row.try_get::<i64, _>("rated_at_unix")?).map_err(|_| {
+                        DomainError::InvalidValue {
+                            field: "rated_at_unix",
+                            reason: "must be non-negative",
+                        }
+                    })?;
+                Ok((WorkId::new(id)?, timestamp))
+            })
+            .collect()
     }
 }
 
@@ -683,8 +719,17 @@ async fn upsert_work(
 async fn upsert_rating(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     record: &RatingRecord,
+    rated_at_unix: Option<u64>,
 ) -> Result<(), StorageError> {
-    sqlx::query("INSERT INTO ratings(work_id, rating) VALUES (?, ?) ON CONFLICT(work_id) DO UPDATE SET rating = excluded.rating").bind(i64::from(record.work_id().get())).bind(record.rating().get()).execute(&mut **tx).await?;
+    let rated_at_unix = rated_at_unix
+        .or(record.rated_at_unix())
+        .map(i64::try_from)
+        .transpose()
+        .map_err(|_| DomainError::InvalidValue {
+            field: "rated_at_unix",
+            reason: "must fit in a signed 64-bit integer",
+        })?;
+    sqlx::query("INSERT INTO ratings(work_id, rating, rated_at_unix) VALUES (?, ?, ?) ON CONFLICT(work_id) DO UPDATE SET rating = excluded.rating, rated_at_unix = COALESCE(excluded.rated_at_unix, ratings.rated_at_unix)").bind(i64::from(record.work_id().get())).bind(record.rating().get()).bind(rated_at_unix).execute(&mut **tx).await?;
     sqlx::query("DELETE FROM aspects WHERE work_id = ?")
         .bind(i64::from(record.work_id().get()))
         .execute(&mut **tx)
@@ -698,6 +743,21 @@ async fn upsert_rating(
             .await?;
     }
     Ok(())
+}
+
+fn with_stored_rating_date(
+    record: RatingRecord,
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<RatingRecord, StorageError> {
+    let timestamp = row
+        .try_get::<Option<i64>, _>("rated_at_unix")?
+        .map(u64::try_from)
+        .transpose()
+        .map_err(|_| DomainError::InvalidValue {
+            field: "rated_at_unix",
+            reason: "must be non-negative",
+        })?;
+    Ok(timestamp.map_or(record.clone(), |value| record.with_rated_at_unix(value)))
 }
 async fn insert_event(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
@@ -789,6 +849,8 @@ struct Backup {
     version: u32,
     works: Vec<NormalizedWork>,
     ratings: Vec<RatingRecord>,
+    #[serde(default)]
+    rating_dates: Vec<(WorkId, u64)>,
     events: Vec<WatchEvent>,
     preferences: Vec<(String, serde_json::Value)>,
     #[serde(default)]
