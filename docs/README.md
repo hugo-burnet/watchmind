@@ -11,3 +11,4 @@ Principes à préserver :
 - résultats déterministes à configuration et dataset identiques.
 
 Les règles d'organisation du code sont détaillées dans [`architecture-principles.md`](architecture-principles.md).
+Les invariants et formats JSON sont documentés dans [`domain-contracts.md`](domain-contracts.md).

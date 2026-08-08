@@ -1,0 +1,9 @@
+[
+  { "kind": "completed", "work_id": 1535 },
+  {
+    "kind": "dropped",
+    "work_id": 2001,
+    "progress": { "position": 3, "total": 12 }
+  },
+  { "kind": "rewatched", "work_id": 1535 }
+]

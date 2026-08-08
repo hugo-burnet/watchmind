@@ -3,6 +3,14 @@
 //! Les contrats du domaine et les algorithmes seront ajoutés par les lots
 //! suivants. Cette crate ne dépendra ni de l'API, ni de `SQLite`, ni du frontend.
 
+mod domain;
+
+pub use domain::{
+    AspectCredit, Contribution, ContributionSource, DomainError, DropProgress, NormalizedWork,
+    PersonalAxis, Rating, RatingRecord, Ratio, RecommendationScore, ScoreDelta, TagWeight,
+    WatchEvent, Weight, WorkId,
+};
+
 /// Nom stable du moteur, partagé avec ses adaptateurs.
 #[must_use]
 pub const fn engine_name() -> &'static str {

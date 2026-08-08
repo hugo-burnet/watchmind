@@ -1,0 +1,15 @@
+{
+  "total": 1.25,
+  "contributions": [
+    {
+      "source": { "kind": "tag_affinity" },
+      "value": 1.5,
+      "detail": "forte affinité avec Psychological"
+    },
+    {
+      "source": { "kind": "penalty" },
+      "value": -0.25,
+      "detail": "prérequis de franchise manquant"
+    }
+  ]
+}
