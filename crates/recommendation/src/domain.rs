@@ -66,6 +66,42 @@ impl WorkId {
     }
 }
 
+/// Durée totale strictement positive d'une œuvre, en minutes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+#[serde(transparent)]
+pub struct RuntimeMinutes(u32);
+
+impl RuntimeMinutes {
+    /// Construit une durée totale.
+    ///
+    /// # Errors
+    ///
+    /// Retourne une erreur si `value` vaut zéro.
+    pub fn new(value: u32) -> Result<Self, DomainError> {
+        if value == 0 {
+            return Err(DomainError::InvalidValue {
+                field: "runtime_minutes",
+                reason: "must be greater than zero",
+            });
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for RuntimeMinutes {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::new(u32::deserialize(deserializer)?).map_err(de::Error::custom)
+    }
+}
+
 impl<'de> Deserialize<'de> for WorkId {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -280,6 +316,8 @@ pub struct NormalizedWork {
     id: WorkId,
     title: String,
     global_score: Option<Rating>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runtime_minutes: Option<RuntimeMinutes>,
     tags: Vec<TagWeight>,
 }
 
@@ -288,6 +326,8 @@ struct NormalizedWorkData {
     id: WorkId,
     title: String,
     global_score: Option<Rating>,
+    #[serde(default)]
+    runtime_minutes: Option<RuntimeMinutes>,
     tags: Vec<TagWeight>,
 }
 
@@ -318,8 +358,16 @@ impl NormalizedWork {
             id,
             title,
             global_score,
+            runtime_minutes: None,
             tags,
         })
+    }
+
+    /// Ajoute la durée totale connue de l'œuvre.
+    #[must_use]
+    pub const fn with_runtime_minutes(mut self, runtime_minutes: RuntimeMinutes) -> Self {
+        self.runtime_minutes = Some(runtime_minutes);
+        self
     }
 
     #[must_use]
@@ -335,6 +383,11 @@ impl NormalizedWork {
     #[must_use]
     pub const fn global_score(&self) -> Option<Rating> {
         self.global_score
+    }
+
+    #[must_use]
+    pub const fn runtime_minutes(&self) -> Option<RuntimeMinutes> {
+        self.runtime_minutes
     }
 
     #[must_use]
@@ -355,7 +408,11 @@ impl TryFrom<NormalizedWorkData> for NormalizedWork {
     type Error = DomainError;
 
     fn try_from(data: NormalizedWorkData) -> Result<Self, Self::Error> {
-        Self::new(data.id, data.title, data.global_score, data.tags)
+        let work = Self::new(data.id, data.title, data.global_score, data.tags)?;
+        Ok(match data.runtime_minutes {
+            Some(runtime_minutes) => work.with_runtime_minutes(runtime_minutes),
+            None => work,
+        })
     }
 }
 
@@ -785,6 +842,7 @@ mod tests {
         assert!(Ratio::new(1.1).is_err());
         assert!(Weight::new(-0.1).is_err());
         assert!(ScoreDelta::new(f64::INFINITY).is_err());
+        assert!(RuntimeMinutes::new(0).is_err());
     }
 
     #[test]

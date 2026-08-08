@@ -13,3 +13,5 @@ Principes à préserver :
 Les règles d'organisation du code sont détaillées dans [`architecture-principles.md`](architecture-principles.md).
 Les invariants et formats JSON sont documentés dans [`domain-contracts.md`](domain-contracts.md).
 Le format du dataset offline est documenté dans [`offline-import.md`](offline-import.md).
+Le calcul de la cible centrée et ses paramètres sont documentés dans
+[`personal-affinity.md`](personal-affinity.md).

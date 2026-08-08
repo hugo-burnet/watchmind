@@ -28,6 +28,8 @@ ligne, le champ et la valeur lorsque ces informations sont disponibles.
 Le fichier est un tableau d'objets `NormalizedWork` au format documenté dans
 [`domain-contracts.md`](domain-contracts.md). Les identifiants d'œuvres sont
 uniques et les tags AniList utilisent des poids normalisés entre 0 et 1.
+`runtime_minutes` est optionnel ; lorsqu'il est connu, il permet de corriger le
+signal de rewatch sans modifier le format de l'historique CSV.
 
 ## Commande
 

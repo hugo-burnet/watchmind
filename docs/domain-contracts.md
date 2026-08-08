@@ -10,6 +10,7 @@ Rust ne pourrait pas construire.
 | Type | Invariant |
 |---|---|
 | `WorkId` | entier AniList strictement positif |
+| `RuntimeMinutes` | durée totale strictement positive en minutes |
 | `Rating` | nombre fini dans `[0, 10]` |
 | `Ratio` | nombre fini dans `[0, 1]` |
 | `Weight` | nombre fini dans `[0, 1]` |
@@ -29,7 +30,8 @@ Les cinq valeurs JSON de `PersonalAxis` sont `story`, `characters`,
 
 Les fichiers de référence se trouvent dans [`fixtures/domain`](../fixtures/domain) :
 
-- `normalized-work.json` décrit le contrat catalogue minimal ;
+- `normalized-work.json` décrit le contrat catalogue minimal, dont la durée
+  totale optionnelle `runtime_minutes` ;
 - `rating-record.json` associe une note et des crédits d'aspects à une œuvre ;
 - `watch-events.json` documente les événements `completed`, `dropped` et
   `rewatched` ;
