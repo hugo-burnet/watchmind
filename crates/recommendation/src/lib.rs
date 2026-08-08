@@ -4,6 +4,7 @@
 //! suivants. Cette crate ne dépendra ni de l'API, ni de `SQLite`, ni du frontend.
 
 mod affinity;
+mod candidates;
 mod domain;
 mod evaluation;
 mod import;
@@ -14,10 +15,13 @@ pub use affinity::{
     AffinityConfig, AffinityError, AffinityReport, PersonalAffinity, RatingSignalKind,
     calculate_affinities,
 };
+pub use candidates::{
+    CandidateError, CandidateFilter, CandidateReport, CandidateRequest, CandidateSet,
+};
 pub use domain::{
     AspectCredit, Contribution, ContributionSource, DomainError, DropProgress, NormalizedWork,
-    PersonalAxis, Rating, RatingRecord, Ratio, RecommendationScore, RuntimeMinutes, ScoreDelta,
-    TagWeight, WatchEvent, Weight, WorkId,
+    PersonalAxis, Rating, RatingRecord, Ratio, RecommendationScore, ReleaseYear, RuntimeMinutes,
+    ScoreDelta, TagWeight, WatchEvent, Weight, WorkFormat, WorkId,
 };
 pub use evaluation::{
     BaselineKind, BaselineResult, EvaluationError, EvaluationMetrics, EvaluationReport, TargetRank,

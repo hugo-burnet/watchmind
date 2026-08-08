@@ -43,6 +43,8 @@
     "id": 5,
     "title": "Silent Meridian",
     "global_score": 8.0,
+    "format": "movie",
+    "release_year": 2021,
     "runtime_minutes": 288,
     "tags": [
       { "name": "Drama", "weight": 0.75 },
@@ -53,6 +55,8 @@
     "id": 6,
     "title": "Redshift Children",
     "global_score": 7.9,
+    "format": "tv",
+    "release_year": 2023,
     "runtime_minutes": 288,
     "tags": [
       { "name": "Psychological", "weight": 0.8 },
@@ -63,6 +67,9 @@
     "id": 7,
     "title": "Lanterns at Noon",
     "global_score": 7.5,
+    "format": "tv",
+    "release_year": 2024,
+    "available": false,
     "runtime_minutes": 288,
     "tags": [
       { "name": "Drama", "weight": 0.8 },
@@ -73,6 +80,9 @@
     "id": 8,
     "title": "The Ninth Current",
     "global_score": 7.7,
+    "format": "tv",
+    "release_year": 2025,
+    "prerequisites": [4],
     "runtime_minutes": 288,
     "tags": [
       { "name": "Fantasy", "weight": 0.65 },

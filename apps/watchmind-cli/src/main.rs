@@ -6,7 +6,10 @@ use std::{
     process::ExitCode,
 };
 
-use watchmind_recommendation::{OfflineDataset, engine_name, evaluate_baselines};
+use watchmind_recommendation::{
+    CandidateRequest, OfflineDataset, RecommendationEngine, TasteProfileConfig,
+    build_taste_profile, engine_name, evaluate_baselines,
+};
 
 fn main() -> ExitCode {
     match run(env::args().skip(1)) {
@@ -50,8 +53,60 @@ fn run(args: impl IntoIterator<Item = String>) -> Result<(), String> {
             "usage: watchmind-cli compare-baselines <ratings.csv> --catalog <catalog.json> [--json]"
                 .to_owned(),
         ),
+        [command, ratings, flag, catalog] if command == "recommend" && flag == "--catalog" => {
+            recommend(Path::new(ratings), Path::new(catalog), OutputFormat::Text)
+        }
+        [command, ratings, flag, catalog, format]
+            if command == "recommend" && flag == "--catalog" && format == "--json" =>
+        {
+            recommend(Path::new(ratings), Path::new(catalog), OutputFormat::Json)
+        }
+        [command, ..] if command == "recommend" => Err(
+            "usage: watchmind-cli recommend <ratings.csv> --catalog <catalog.json> [--json]"
+                .to_owned(),
+        ),
         [command, ..] => Err(format!("unknown command {command:?}")),
     }
+}
+
+fn recommend(
+    ratings_path: &Path,
+    catalog_path: &Path,
+    output_format: OutputFormat,
+) -> Result<(), String> {
+    let dataset = load_dataset(ratings_path, catalog_path)?;
+    let profile = build_taste_profile(&dataset, &TasteProfileConfig::default())
+        .map_err(|error| error.to_string())?;
+    let engine = RecommendationEngine::default();
+    let candidates = engine.generate_candidates(&dataset, &CandidateRequest::default());
+    let recommendations = engine
+        .score_candidates(&profile, candidates.works())
+        .map_err(|error| error.to_string())?;
+
+    match output_format {
+        OutputFormat::Text => {
+            println!("{}", candidates.report());
+            for (index, recommendation) in recommendations.iter().enumerate() {
+                println!(
+                    "\n{}. {} [id={}] score={:.6}",
+                    index + 1,
+                    recommendation.title(),
+                    recommendation.work_id().get(),
+                    recommendation.score().total()
+                );
+                println!("{}", recommendation.explanation());
+            }
+        }
+        OutputFormat::Json => println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({
+                "candidate_report": candidates.report(),
+                "recommendations": recommendations,
+            }))
+            .map_err(|error| error.to_string())?
+        ),
+    }
+    Ok(())
 }
 
 fn import_csv(ratings_path: &Path, catalog_path: &Path) -> Result<(), String> {

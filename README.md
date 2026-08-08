@@ -23,6 +23,8 @@ cargo run -p watchmind-cli
 cargo run -p watchmind-cli -- import-csv fixtures/synthetic/ratings.csv --catalog fixtures/synthetic/catalog.json
 cargo run -p watchmind-cli -- compare-baselines fixtures/synthetic/ratings.csv --catalog fixtures/synthetic/catalog.json
 cargo run -p watchmind-cli -- compare-baselines fixtures/synthetic/ratings.csv --catalog fixtures/synthetic/catalog.json --json
+cargo run -p watchmind-cli -- recommend fixtures/synthetic/ratings.csv --catalog fixtures/synthetic/catalog.json
+cargo run -p watchmind-cli -- recommend fixtures/synthetic/ratings.csv --catalog fixtures/synthetic/catalog.json --json
 cargo test --workspace
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
@@ -41,3 +43,7 @@ Le calcul d'affinité personnelle et sa configuration V1 sont décrits dans
 [`docs/personal-affinity.md`](docs/personal-affinity.md).
 La construction déterministe du profil de goût, ses pôles et ses fallbacks sont
 décrits dans [`docs/taste-profile.md`](docs/taste-profile.md).
+Le score exclusivement dérivé de contributions et la projection des raisons sont
+décrits dans [`docs/explainable-scoring.md`](docs/explainable-scoring.md).
+Les filtres de retrieval, leur ordre et leur rapport sont décrits dans
+[`docs/candidate-generation.md`](docs/candidate-generation.md).

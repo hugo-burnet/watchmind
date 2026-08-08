@@ -102,6 +102,54 @@ impl<'de> Deserialize<'de> for RuntimeMinutes {
     }
 }
 
+/// Année de première diffusion comprise dans une plage exploitable par le catalogue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+#[serde(transparent)]
+pub struct ReleaseYear(u16);
+
+impl ReleaseYear {
+    /// Construit une année de diffusion.
+    ///
+    /// # Errors
+    ///
+    /// Retourne une erreur pour une année antérieure à 1900.
+    pub fn new(value: u16) -> Result<Self, DomainError> {
+        if value < 1900 {
+            return Err(DomainError::InvalidValue {
+                field: "release_year",
+                reason: "must be greater than or equal to 1900",
+            });
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u16 {
+        self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for ReleaseYear {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::new(u16::deserialize(deserializer)?).map_err(de::Error::custom)
+    }
+}
+
+/// Format éditorial d'une œuvre `AniList`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkFormat {
+    Tv,
+    Movie,
+    Ova,
+    Ona,
+    Special,
+    Music,
+}
+
 impl<'de> Deserialize<'de> for WorkId {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -318,6 +366,14 @@ pub struct NormalizedWork {
     global_score: Option<Rating>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     runtime_minutes: Option<RuntimeMinutes>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    format: Option<WorkFormat>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    release_year: Option<ReleaseYear>,
+    #[serde(default = "available_by_default", skip_serializing_if = "is_true")]
+    available: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    prerequisites: Vec<WorkId>,
     tags: Vec<TagWeight>,
 }
 
@@ -328,7 +384,24 @@ struct NormalizedWorkData {
     global_score: Option<Rating>,
     #[serde(default)]
     runtime_minutes: Option<RuntimeMinutes>,
+    #[serde(default)]
+    format: Option<WorkFormat>,
+    #[serde(default)]
+    release_year: Option<ReleaseYear>,
+    #[serde(default = "available_by_default")]
+    available: bool,
+    #[serde(default)]
+    prerequisites: Vec<WorkId>,
     tags: Vec<TagWeight>,
+}
+
+const fn available_by_default() -> bool {
+    true
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_true(value: &bool) -> bool {
+    *value
 }
 
 impl NormalizedWork {
@@ -359,6 +432,10 @@ impl NormalizedWork {
             title,
             global_score,
             runtime_minutes: None,
+            format: None,
+            release_year: None,
+            available: true,
+            prerequisites: Vec::new(),
             tags,
         })
     }
@@ -368,6 +445,53 @@ impl NormalizedWork {
     pub const fn with_runtime_minutes(mut self, runtime_minutes: RuntimeMinutes) -> Self {
         self.runtime_minutes = Some(runtime_minutes);
         self
+    }
+
+    /// Ajoute le format catalogue connu de l'œuvre.
+    #[must_use]
+    pub const fn with_format(mut self, format: WorkFormat) -> Self {
+        self.format = Some(format);
+        self
+    }
+
+    /// Ajoute l'année de première diffusion connue de l'œuvre.
+    #[must_use]
+    pub const fn with_release_year(mut self, release_year: ReleaseYear) -> Self {
+        self.release_year = Some(release_year);
+        self
+    }
+
+    /// Indique si l'œuvre est actuellement accessible dans le catalogue local.
+    #[must_use]
+    pub const fn with_availability(mut self, available: bool) -> Self {
+        self.available = available;
+        self
+    }
+
+    /// Déclare les œuvres à avoir vues avant cette œuvre.
+    ///
+    /// # Errors
+    ///
+    /// Refuse un prérequis identique à l'œuvre ou présent plusieurs fois.
+    pub fn with_prerequisites(
+        mut self,
+        mut prerequisites: Vec<WorkId>,
+    ) -> Result<Self, DomainError> {
+        prerequisites.sort_unstable();
+        if prerequisites.binary_search(&self.id).is_ok() {
+            return Err(DomainError::InvalidValue {
+                field: "work.prerequisites",
+                reason: "must not contain the work itself",
+            });
+        }
+        if prerequisites.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(DomainError::InvalidValue {
+                field: "work.prerequisites",
+                reason: "must not contain duplicates",
+            });
+        }
+        self.prerequisites = prerequisites;
+        Ok(self)
     }
 
     #[must_use]
@@ -391,6 +515,26 @@ impl NormalizedWork {
     }
 
     #[must_use]
+    pub const fn format(&self) -> Option<WorkFormat> {
+        self.format
+    }
+
+    #[must_use]
+    pub const fn release_year(&self) -> Option<ReleaseYear> {
+        self.release_year
+    }
+
+    #[must_use]
+    pub const fn is_available(&self) -> bool {
+        self.available
+    }
+
+    #[must_use]
+    pub fn prerequisites(&self) -> &[WorkId] {
+        &self.prerequisites
+    }
+
+    #[must_use]
     pub fn tags(&self) -> &[TagWeight] {
         &self.tags
     }
@@ -408,7 +552,11 @@ impl TryFrom<NormalizedWorkData> for NormalizedWork {
     type Error = DomainError;
 
     fn try_from(data: NormalizedWorkData) -> Result<Self, Self::Error> {
-        let work = Self::new(data.id, data.title, data.global_score, data.tags)?;
+        let mut work = Self::new(data.id, data.title, data.global_score, data.tags)?;
+        work.format = data.format;
+        work.release_year = data.release_year;
+        work.available = data.available;
+        work = work.with_prerequisites(data.prerequisites)?;
         Ok(match data.runtime_minutes {
             Some(runtime_minutes) => work.with_runtime_minutes(runtime_minutes),
             None => work,

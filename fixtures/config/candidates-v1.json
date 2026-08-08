@@ -1,0 +1,10 @@
+{
+  "blacklisted": [],
+  "formats": [],
+  "minimum_year": null,
+  "maximum_year": null,
+  "minimum_global_score": null,
+  "require_available": true,
+  "require_prerequisites": true,
+  "limit": 100
+}
