@@ -1,0 +1,6 @@
+{
+  "tag_affinity_weight": 1.0,
+  "negative_tag_penalty_weight": 1.0,
+  "pole_similarity_weight": 0.35,
+  "anilist_prior_weight": 0.1
+}

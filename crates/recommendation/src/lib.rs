@@ -8,6 +8,7 @@ mod domain;
 mod evaluation;
 mod import;
 mod profile;
+mod scoring;
 
 pub use affinity::{
     AffinityConfig, AffinityError, AffinityReport, PersonalAffinity, RatingSignalKind,
@@ -26,6 +27,9 @@ pub use import::{DatasetError, ImportError, ImportSummary, OfflineDataset};
 pub use profile::{
     AxisProfile, AxisWeight, AxisWeightSource, PoleTag, ProfileError, ProfileMode, TagAffinity,
     TastePole, TasteProfile, TasteProfileConfig, build_taste_profile,
+};
+pub use scoring::{
+    RecommendationEngine, ScoreExplanation, ScoredRecommendation, ScoringConfig, ScoringError,
 };
 
 /// Nom stable du moteur, partagé avec ses adaptateurs.
