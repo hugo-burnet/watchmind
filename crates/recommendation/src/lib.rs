@@ -5,6 +5,7 @@
 
 mod affinity;
 mod candidates;
+mod diversification;
 mod domain;
 mod evaluation;
 mod import;
@@ -17,6 +18,10 @@ pub use affinity::{
 };
 pub use candidates::{
     CandidateError, CandidateFilter, CandidateReport, CandidateRequest, CandidateSet,
+};
+pub use diversification::{
+    DiversificationConfig, DiversificationError, ExplorationLabel, ExplorationSignal,
+    FinalRecommendation, RecommendationKind, RecommendationList,
 };
 pub use domain::{
     AspectCredit, Contribution, ContributionSource, DomainError, DropProgress, NormalizedWork,

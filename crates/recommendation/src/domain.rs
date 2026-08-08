@@ -374,6 +374,10 @@ pub struct NormalizedWork {
     available: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     prerequisites: Vec<WorkId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    franchise: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    studios: Vec<String>,
     tags: Vec<TagWeight>,
 }
 
@@ -392,6 +396,10 @@ struct NormalizedWorkData {
     available: bool,
     #[serde(default)]
     prerequisites: Vec<WorkId>,
+    #[serde(default)]
+    franchise: Option<String>,
+    #[serde(default)]
+    studios: Vec<String>,
     tags: Vec<TagWeight>,
 }
 
@@ -436,6 +444,8 @@ impl NormalizedWork {
             release_year: None,
             available: true,
             prerequisites: Vec::new(),
+            franchise: None,
+            studios: Vec::new(),
             tags,
         })
     }
@@ -494,6 +504,41 @@ impl NormalizedWork {
         Ok(self)
     }
 
+    /// Rattache l'œuvre à une franchise normalisée pour la diversification.
+    ///
+    /// # Errors
+    ///
+    /// Refuse un nom vide.
+    pub fn with_franchise(mut self, franchise: impl Into<String>) -> Result<Self, DomainError> {
+        let franchise = franchise.into();
+        self.franchise = Some(normalized_text("work.franchise", &franchise)?);
+        Ok(self)
+    }
+
+    /// Renseigne les studios, normalisés, uniques et ordonnés.
+    ///
+    /// # Errors
+    ///
+    /// Refuse un nom vide ou deux studios identiques sans tenir compte de la casse.
+    pub fn with_studios(mut self, studios: Vec<String>) -> Result<Self, DomainError> {
+        let mut normalized = studios
+            .into_iter()
+            .map(|studio| normalized_text("work.studios", &studio))
+            .collect::<Result<Vec<_>, _>>()?;
+        normalized.sort_by_key(|studio| studio.to_lowercase());
+        if normalized
+            .windows(2)
+            .any(|pair| pair[0].eq_ignore_ascii_case(&pair[1]))
+        {
+            return Err(DomainError::InvalidValue {
+                field: "work.studios",
+                reason: "must not contain duplicates",
+            });
+        }
+        self.studios = normalized;
+        Ok(self)
+    }
+
     #[must_use]
     pub const fn id(&self) -> WorkId {
         self.id
@@ -535,6 +580,16 @@ impl NormalizedWork {
     }
 
     #[must_use]
+    pub fn franchise(&self) -> Option<&str> {
+        self.franchise.as_deref()
+    }
+
+    #[must_use]
+    pub fn studios(&self) -> &[String] {
+        &self.studios
+    }
+
+    #[must_use]
     pub fn tags(&self) -> &[TagWeight] {
         &self.tags
     }
@@ -557,6 +612,10 @@ impl TryFrom<NormalizedWorkData> for NormalizedWork {
         work.release_year = data.release_year;
         work.available = data.available;
         work = work.with_prerequisites(data.prerequisites)?;
+        if let Some(franchise) = data.franchise {
+            work = work.with_franchise(franchise)?;
+        }
+        work = work.with_studios(data.studios)?;
         Ok(match data.runtime_minutes {
             Some(runtime_minutes) => work.with_runtime_minutes(runtime_minutes),
             None => work,

@@ -28,6 +28,9 @@ fn command_reports_filtering_and_explains_ranked_candidates_deterministically() 
     assert!(report.starts_with("candidates: catalog=8 accepted=3 seen=4"));
     assert!(report.contains("Raisons :"));
     assert!(report.contains("Risques :"));
+    assert!(report.contains("type=sûre"));
+    assert!(report.contains("type=pari"));
+    assert!(report.contains("Pari :"));
     assert!(!report.contains("Lanterns at Noon"));
 }
 
@@ -39,5 +42,10 @@ fn command_exposes_the_same_filter_report_and_scores_as_json() {
 
     assert_eq!(document["candidate_report"]["seen"], 4);
     assert_eq!(document["candidate_report"]["availability"], 1);
+    assert_eq!(document["selection"]["safe_count"], 1);
+    assert_eq!(document["selection"]["exploration_count"], 2);
     assert_eq!(document["recommendations"].as_array().unwrap().len(), 3);
+    assert_eq!(document["recommendations"][0]["kind"], "safe");
+    assert_eq!(document["recommendations"][1]["kind"], "exploration");
+    assert!(document["recommendations"][1]["exploration"]["text"].is_string());
 }

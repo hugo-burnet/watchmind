@@ -31,7 +31,7 @@ Les cinq valeurs JSON de `PersonalAxis` sont `story`, `characters`,
 Les fichiers de référence se trouvent dans [`fixtures/domain`](../fixtures/domain) :
 
 - `normalized-work.json` décrit le contrat catalogue minimal, dont la durée
-  totale optionnelle `runtime_minutes` ;
+  totale optionnelle `runtime_minutes`, la franchise optionnelle et les studios ;
 - `rating-record.json` associe une note et des crédits d'aspects à une œuvre ;
 - `watch-events.json` documente les événements `completed`, `dropped` et
   `rewatched` ;

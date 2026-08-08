@@ -47,3 +47,5 @@ Le score exclusivement dérivé de contributions et la projection des raisons so
 décrits dans [`docs/explainable-scoring.md`](docs/explainable-scoring.md).
 Les filtres de retrieval, leur ordre et leur rapport sont décrits dans
 [`docs/candidate-generation.md`](docs/candidate-generation.md).
+La diversification MMR, les plafonds et les paris d'exploration sont décrits
+dans [`docs/diversification.md`](docs/diversification.md).

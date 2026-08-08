@@ -7,8 +7,8 @@ use std::{
 };
 
 use watchmind_recommendation::{
-    CandidateRequest, OfflineDataset, RecommendationEngine, TasteProfileConfig,
-    build_taste_profile, engine_name, evaluate_baselines,
+    CandidateRequest, DiversificationConfig, OfflineDataset, RecommendationEngine,
+    RecommendationKind, TasteProfileConfig, build_taste_profile, engine_name, evaluate_baselines,
 };
 
 fn main() -> ExitCode {
@@ -80,28 +80,40 @@ fn recommend(
     let engine = RecommendationEngine::default();
     let candidates = engine.generate_candidates(&dataset, &CandidateRequest::default());
     let recommendations = engine
-        .score_candidates(&profile, candidates.works())
+        .recommend(&profile, &candidates, &DiversificationConfig::default())
         .map_err(|error| error.to_string())?;
 
     match output_format {
         OutputFormat::Text => {
             println!("{}", candidates.report());
-            for (index, recommendation) in recommendations.iter().enumerate() {
+            for (index, recommendation) in recommendations.recommendations().iter().enumerate() {
+                let scored = recommendation.scored();
+                let kind = match recommendation.kind() {
+                    RecommendationKind::Safe => "sûre",
+                    RecommendationKind::Exploration => "pari",
+                };
                 println!(
-                    "\n{}. {} [id={}] score={:.6}",
+                    "\n{}. {} [id={}] score={:.6} type={kind}",
                     index + 1,
-                    recommendation.title(),
-                    recommendation.work_id().get(),
-                    recommendation.score().total()
+                    scored.title(),
+                    scored.work_id().get(),
+                    scored.score().total()
                 );
-                println!("{}", recommendation.explanation());
+                if let Some(exploration) = recommendation.exploration() {
+                    println!("{}", exploration.text());
+                }
+                println!("{}", scored.explanation());
             }
         }
         OutputFormat::Json => println!(
             "{}",
             serde_json::to_string(&serde_json::json!({
                 "candidate_report": candidates.report(),
-                "recommendations": recommendations,
+                "selection": {
+                    "safe_count": recommendations.safe_count(),
+                    "exploration_count": recommendations.exploration_count(),
+                },
+                "recommendations": recommendations.recommendations(),
             }))
             .map_err(|error| error.to_string())?
         ),

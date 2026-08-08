@@ -17,3 +17,5 @@ Le calcul de la cible centrée et ses paramètres sont documentés dans
 [`personal-affinity.md`](personal-affinity.md).
 Le profil de goût, ses affinités de tags, ses pôles et ses priors sont
 documentés dans [`taste-profile.md`](taste-profile.md).
+La diversification MMR et les paris d'exploration sont documentés dans
+[`diversification.md`](diversification.md).

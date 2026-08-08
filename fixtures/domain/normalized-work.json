@@ -3,6 +3,8 @@
   "title": "Death Note",
   "global_score": 8.62,
   "runtime_minutes": 888,
+  "franchise": "Death Note",
+  "studios": ["Madhouse"],
   "tags": [
     { "name": "Drama", "weight": 0.82 },
     { "name": "Psychological", "weight": 0.96 }

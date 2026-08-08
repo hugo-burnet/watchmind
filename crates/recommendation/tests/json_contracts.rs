@@ -46,6 +46,18 @@ fn json_cannot_bypass_numeric_or_aggregate_invariants() {
         .is_err()
     );
     assert!(
+        serde_json::from_str::<NormalizedWork>(
+            r#"{
+                "id":1,
+                "title":"Invalid studios",
+                "global_score":8,
+                "studios":["Bones","bones"],
+                "tags":[]
+            }"#
+        )
+        .is_err()
+    );
+    assert!(
         serde_json::from_str::<RatingRecord>(
             r#"{
             "work_id":1,
