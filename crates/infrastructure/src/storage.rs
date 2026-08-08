@@ -101,6 +101,14 @@ impl Database {
     /// # Errors
     /// Retourne une erreur de lecture SQL, sérialisation ou écriture.
     pub async fn export(&self, path: impl AsRef<Path>) -> Result<(), StorageError> {
+        tokio::fs::write(path, self.export_bytes().await?).await?;
+        Ok(())
+    }
+
+    /// Sérialise toutes les données applicatives dans un JSON versionné.
+    /// # Errors
+    /// Retourne une erreur de lecture SQL ou de sérialisation.
+    pub async fn export_bytes(&self) -> Result<Vec<u8>, StorageError> {
         let backup = Backup {
             version: 2,
             works: self.works().all().await?,
@@ -110,15 +118,21 @@ impl Database {
             library: self.library().all().await?,
             snapshots: self.snapshots().archive().await?,
         };
-        tokio::fs::write(path, serde_json::to_vec_pretty(&backup)?).await?;
-        Ok(())
+        Ok(serde_json::to_vec_pretty(&backup)?)
     }
 
     /// Remplace atomiquement le contenu applicatif par celui d'un export.
     /// # Errors
     /// Refuse un export invalide et annule alors toute la transaction.
     pub async fn restore(&self, path: impl AsRef<Path>) -> Result<(), StorageError> {
-        let backup: Backup = serde_json::from_slice(&tokio::fs::read(path).await?)?;
+        self.restore_bytes(&tokio::fs::read(path).await?).await
+    }
+
+    /// Remplace atomiquement le contenu applicatif depuis un export en mémoire.
+    /// # Errors
+    /// Refuse un export invalide et annule alors toute la transaction.
+    pub async fn restore_bytes(&self, bytes: &[u8]) -> Result<(), StorageError> {
+        let backup: Backup = serde_json::from_slice(bytes)?;
         if !matches!(backup.version, 1 | 2) {
             return Err(StorageError::UnsupportedBackup(backup.version));
         }
@@ -164,6 +178,24 @@ impl Database {
             )
             .await?;
         }
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    /// Efface atomiquement toutes les données applicatives.
+    /// # Errors
+    /// Annule toute la transaction si SQLite refuse une suppression.
+    pub async fn clear(&self) -> Result<(), StorageError> {
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query("DELETE FROM profile_snapshots")
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query("DELETE FROM preferences")
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query("DELETE FROM works")
+            .execute(&mut *transaction)
+            .await?;
         transaction.commit().await?;
         Ok(())
     }

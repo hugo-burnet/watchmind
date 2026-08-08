@@ -111,3 +111,25 @@ async fn exports_and_restores_a_database() {
         json!({"history_size": 1})
     );
 }
+
+#[tokio::test]
+async fn restores_from_memory_and_clears_atomically() {
+    let database = Database::in_memory().await.unwrap();
+    let work = sample_work();
+    database.works().upsert(&work).await.unwrap();
+    database
+        .library()
+        .upsert(&LibraryEntry {
+            work_id: work.id(),
+            comment: None,
+        })
+        .await
+        .unwrap();
+
+    let backup = database.export_bytes().await.unwrap();
+    database.clear().await.unwrap();
+    assert!(database.works().all().await.unwrap().is_empty());
+
+    database.restore_bytes(&backup).await.unwrap();
+    assert_eq!(database.works().all().await.unwrap(), vec![work]);
+}

@@ -11,8 +11,8 @@ use std::{
 
 use axum::{
     Json, Router,
-    body::Body,
-    extract::{Path, Query, State},
+    body::{Body, Bytes},
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::{Request, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -148,6 +148,13 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/evaluation", get(evaluation))
         .route("/api/health", get(health))
         .route("/api/export", get(export_library))
+        .route(
+            "/api/database",
+            get(export_database)
+                .put(import_database)
+                .delete(clear_database),
+        )
+        .layer(DefaultBodyLimit::max(25 * 1024 * 1024))
         .with_state(state)
 }
 
@@ -182,6 +189,34 @@ async fn require_token(
 
 async fn health() -> Json<Value> {
     Json(json!({ "status": "ok" }))
+}
+
+async fn export_database(State(state): State<ApiState>) -> Result<Response, ApiError> {
+    let body = state.database.export_bytes().await?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, "application/json; charset=utf-8"),
+            (
+                header::CONTENT_DISPOSITION,
+                "attachment; filename=watchmind-backup.json",
+            ),
+        ],
+        body,
+    )
+        .into_response())
+}
+
+async fn import_database(
+    State(state): State<ApiState>,
+    body: Bytes,
+) -> Result<StatusCode, ApiError> {
+    state.database.restore_bytes(&body).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn clear_database(State(state): State<ApiState>) -> Result<StatusCode, ApiError> {
+    state.database.clear().await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]

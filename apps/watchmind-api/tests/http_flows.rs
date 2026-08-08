@@ -230,3 +230,45 @@ async fn secured_router_requires_the_configured_bearer_token() {
         StatusCode::OK
     );
 }
+
+#[tokio::test]
+async fn database_backup_can_be_exported_cleared_and_restored() {
+    let db = Database::in_memory().await.unwrap();
+    let app = router(ApiState::with_search(
+        db,
+        || 0,
+        |_, _, _, _| async {
+            Ok(CatalogResponse {
+                works: Vec::new(),
+                from_cache: false,
+            })
+        },
+    ));
+    let work = json!({
+        "id": 1535, "title": "Death Note", "global_score": 8.6,
+        "tags": [{"name": "Crime", "weight": 0.9}]
+    });
+    let (status, _) = call(
+        &app,
+        "PUT",
+        "/api/library/1535",
+        Some(json!({ "work": work, "comment": "Repère" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (status, backup) = call(&app, "GET", "/api/database", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(backup["version"], 2);
+
+    let (status, _) = call(&app, "DELETE", "/api/database", None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, empty) = call(&app, "GET", "/api/library", None).await;
+    assert!(empty.as_array().unwrap().is_empty());
+
+    let (status, _) = call(&app, "PUT", "/api/database", Some(backup)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, restored) = call(&app, "GET", "/api/library", None).await;
+    assert_eq!(restored[0]["work"]["title"], "Death Note");
+    assert_eq!(restored[0]["library"]["comment"], "Repère");
+}

@@ -95,4 +95,12 @@ export const api = {
   profile: () => request<ProfileSnapshot>("/api/profile"),
   profiles: () => request<ProfileSnapshot[]>("/api/profiles"),
   evaluation: () => request<EvaluationReport>("/api/evaluation"),
+  exportDatabase: async () => {
+    const response = await fetch("/api/database");
+    if (!response.ok) throw new Error(`L’export a échoué (${response.status}).`);
+    return response.blob();
+  },
+  importDatabase: (contents: string) =>
+    request<void>("/api/database", { method: "PUT", body: contents }),
+  clearDatabase: () => request<void>("/api/database", { method: "DELETE" }),
 };
