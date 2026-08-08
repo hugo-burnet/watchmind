@@ -17,7 +17,7 @@ pub use affinity::{
     calculate_affinities,
 };
 pub use candidates::{
-    CandidateError, CandidateFilter, CandidateReport, CandidateRequest, CandidateSet,
+    CandidateError, CandidateFilter, CandidateReport, CandidateRequest, CandidateSet, RetrievalMode,
 };
 pub use diversification::{
     DiversificationConfig, DiversificationError, ExplorationLabel, ExplorationSignal,
@@ -31,8 +31,8 @@ pub use domain::{
 pub use evaluation::{
     BaselineKind, BaselineResult, EvaluationError, EvaluationMetrics, EvaluationReport,
     EvaluationThresholds, FullEvaluationConfig, FullEvaluationError, FullEvaluationReport,
-    RegressionPair, RegressionResult, TargetRank, TemporalBacktest, TemporalRating,
-    evaluate_baselines, evaluate_full,
+    PipelineEvaluation, RegressionPair, RegressionResult, TargetRank, TemporalBacktest,
+    TemporalRating, evaluate_baselines, evaluate_full,
 };
 pub use import::{DatasetError, ImportError, ImportSummary, OfflineDataset};
 pub use profile::{

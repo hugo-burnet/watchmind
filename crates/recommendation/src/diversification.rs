@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     CandidateSet, NormalizedWork, Ratio, RecommendationEngine, ScoredRecommendation, ScoringError,
-    TastePole, TasteProfile, WorkId,
+    TasteProfile, WorkId,
 };
 
 /// Réglages validés de la sélection finale diversifiée.
@@ -18,6 +18,7 @@ pub struct DiversificationConfig {
     safe_count: usize,
     exploration_count: usize,
     mmr_relevance_weight: Ratio,
+    exploration_strength_weight: Ratio,
     max_per_franchise: usize,
     max_per_studio: usize,
     max_per_dominant_tag: usize,
@@ -30,6 +31,7 @@ struct DiversificationConfigData {
     safe_count: usize,
     exploration_count: usize,
     mmr_relevance_weight: Ratio,
+    exploration_strength_weight: Ratio,
     max_per_franchise: usize,
     max_per_studio: usize,
     max_per_dominant_tag: usize,
@@ -42,6 +44,8 @@ impl Default for DiversificationConfigData {
             safe_count: 8,
             exploration_count: 2,
             mmr_relevance_weight: Ratio::new(0.75).expect("default MMR weight is valid"),
+            exploration_strength_weight: Ratio::new(0.6)
+                .expect("default exploration strength weight is valid"),
             max_per_franchise: 1,
             max_per_studio: 2,
             max_per_dominant_tag: 3,
@@ -90,6 +94,7 @@ impl TryFrom<DiversificationConfigData> for DiversificationConfig {
             safe_count: data.safe_count,
             exploration_count: data.exploration_count,
             mmr_relevance_weight: data.mmr_relevance_weight,
+            exploration_strength_weight: data.exploration_strength_weight,
             max_per_franchise: data.max_per_franchise,
             max_per_studio: data.max_per_studio,
             max_per_dominant_tag: data.max_per_dominant_tag,
@@ -235,26 +240,27 @@ impl RecommendationEngine {
         let exploration_target = config.exploration_count.min(target);
         let safe_target = config.safe_count.min(target - exploration_target);
 
-        let mut selected = Vec::with_capacity(target);
-        let mut limits = LimitState::default();
+        let similarities = pairwise_similarities(&choices);
+        let mut state = SelectionState::new(choices.len(), target);
         select_kind(
             &choices,
+            &similarities,
             config,
             RecommendationKind::Exploration,
             exploration_target,
             safe_target,
-            &mut selected,
-            &mut limits,
+            &mut state,
         );
         select_kind(
             &choices,
+            &similarities,
             config,
             RecommendationKind::Safe,
             safe_target,
             0,
-            &mut selected,
-            &mut limits,
+            &mut state,
         );
+        let selected = state.selected;
 
         let exploration_ids = selected
             .iter()
@@ -312,23 +318,69 @@ struct SelectionCandidate {
     exploration: ExplorationLabel,
 }
 
+/// Similarités deux à deux des candidats, calculées une fois par appel.
+///
+/// La sélection MMR compare chaque candidat restant à chaque candidat déjà
+/// retenu, à chaque tour. Recalculer la similarité à la demande reconstruisait
+/// deux dictionnaires de tags par comparaison.
+fn pairwise_similarities(choices: &[SelectionCandidate]) -> Vec<Vec<f64>> {
+    let vectors = choices
+        .iter()
+        .map(|choice| {
+            choice
+                .work
+                .tags()
+                .iter()
+                .map(|tag| (normalized_key(tag.name()), tag.weight().get()))
+                .collect::<BTreeMap<_, _>>()
+        })
+        .collect::<Vec<_>>();
+    let size = choices.len();
+    let mut similarities = vec![vec![0.0; size]; size];
+    for (left, left_tags) in vectors.iter().enumerate() {
+        for (right, right_tags) in vectors.iter().enumerate().skip(left + 1) {
+            let similarity = cosine_similarity(left_tags, right_tags);
+            similarities[left][right] = similarity;
+            similarities[right][left] = similarity;
+        }
+    }
+    similarities
+}
+
+/// Fraction des candidats extrêmes écartés avant de normaliser la pertinence.
+const RELEVANCE_WINSOR_FRACTION: f64 = 0.05;
+
+/// Ramène le score total sur `[0, 1]` en écrêtant les extrêmes.
+///
+/// Un min-max brut laisse un unique candidat aberrant comprimer tous les autres
+/// dans un mouchoir de poche, ce qui rend la pondération MMR dépendante de la
+/// composition du lot. L'écrêtage aux centiles bas et haut supprime cet effet
+/// sans changer l'échelle attendue.
 fn normalize_relevance(choices: &mut [SelectionCandidate]) {
-    let minimum = choices
+    if choices.is_empty() {
+        return;
+    }
+    let mut totals = choices
         .iter()
         .map(|choice| choice.recommendation.score().total())
-        .min_by(f64::total_cmp)
-        .unwrap_or(0.0);
-    let maximum = choices
-        .iter()
-        .map(|choice| choice.recommendation.score().total())
-        .max_by(f64::total_cmp)
-        .unwrap_or(0.0);
+        .collect::<Vec<_>>();
+    totals.sort_by(f64::total_cmp);
+
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    let offset = ((totals.len() - 1) as f64 * RELEVANCE_WINSOR_FRACTION).floor() as usize;
+    let minimum = totals[offset];
+    let maximum = totals[totals.len() - 1 - offset];
     let span = maximum - minimum;
+
     for choice in choices {
-        choice.safe_relevance = if span == 0.0 {
+        choice.safe_relevance = if span <= 0.0 {
             1.0
         } else {
-            (choice.recommendation.score().total() - minimum) / span
+            ((choice.recommendation.score().total() - minimum) / span).clamp(0.0, 1.0)
         };
     }
 }
@@ -388,7 +440,7 @@ fn pole_disagreement(profile: &TasteProfile, work: &NormalizedWork) -> f64 {
     let similarities = profile
         .poles()
         .iter()
-        .map(|pole| work_pole_similarity(work, pole))
+        .map(|pole| crate::profile::work_pole_similarity(work, pole))
         .collect::<Vec<_>>();
     let minimum = similarities
         .iter()
@@ -403,27 +455,19 @@ fn pole_disagreement(profile: &TasteProfile, work: &NormalizedWork) -> f64 {
     (maximum - minimum).clamp(0.0, 1.0)
 }
 
-fn work_pole_similarity(work: &NormalizedWork, pole: &TastePole) -> f64 {
-    let work_tags = work
-        .tags()
-        .iter()
-        .map(|tag| (normalized_key(tag.name()), tag.weight().get()))
-        .collect::<BTreeMap<_, _>>();
-    let pole_tags = pole
-        .dominant_tags()
-        .iter()
-        .map(|tag| (normalized_key(tag.name()), tag.weight()))
-        .collect::<BTreeMap<_, _>>();
-    cosine_similarity(&work_tags, &pole_tags)
-}
-
+/// Plus grande liste réalisable, bornée avant toute exploration exhaustive.
+///
+/// La borne de capacité écarte immédiatement les tailles qu'aucune combinaison
+/// ne peut atteindre. Sans elle, `can_fill` devait parcourir un vaste sous-espace
+/// avant de conclure par la négative, ce qui est précisément le cas coûteux.
 fn maximum_feasible_size(
     choices: &[SelectionCandidate],
     config: &DiversificationConfig,
     desired: usize,
 ) -> usize {
     let available = (0..choices.len()).collect::<Vec<_>>();
-    for size in (1..=desired).rev() {
+    let ceiling = desired.min(capacity_ceiling(choices, config, &available));
+    for size in (1..=ceiling).rev() {
         if can_fill(
             choices,
             config,
@@ -437,37 +481,112 @@ fn maximum_feasible_size(
     0
 }
 
+/// Majorant du nombre d'œuvres sélectionnables sous les plafonds.
+///
+/// Chaque famille de contraintes est traitée indépendamment : au plus
+/// `max_per_franchise` œuvres par franchise, et ainsi de suite. Le plus petit
+/// majorant l'emporte. Calcul linéaire, sans énumération.
+fn capacity_ceiling(
+    choices: &[SelectionCandidate],
+    config: &DiversificationConfig,
+    available: &[usize],
+) -> usize {
+    let mut franchises = BTreeMap::<String, usize>::new();
+    let mut studios = BTreeMap::<String, usize>::new();
+    let mut tags = BTreeMap::<String, usize>::new();
+    let mut without_franchise = 0;
+    let mut without_studio = 0;
+    let mut without_tag = 0;
+
+    for index in available {
+        let work = &choices[*index].work;
+        match work.franchise() {
+            Some(franchise) => increment(&mut franchises, franchise),
+            None => without_franchise += 1,
+        }
+        if work.studios().is_empty() {
+            without_studio += 1;
+        } else {
+            for studio in work.studios() {
+                increment(&mut studios, studio);
+            }
+        }
+        let dominant = dominant_tags(work, config.dominant_tags_per_work);
+        if dominant.is_empty() {
+            without_tag += 1;
+        } else {
+            for tag in dominant {
+                increment(&mut tags, &tag);
+            }
+        }
+    }
+
+    let bound = |counts: &BTreeMap<String, usize>, cap: usize, unconstrained: usize| {
+        counts
+            .values()
+            .map(|count| (*count).min(cap))
+            .sum::<usize>()
+            + unconstrained
+    };
+    available
+        .len()
+        .min(bound(
+            &franchises,
+            config.max_per_franchise,
+            without_franchise,
+        ))
+        .min(bound(&studios, config.max_per_studio, without_studio))
+        .min(bound(&tags, config.max_per_dominant_tag, without_tag))
+}
+
+/// État mutable porté d'une passe de sélection à l'autre.
+///
+/// `redundancy` retient, pour chaque candidat, sa similarité maximale aux
+/// œuvres déjà retenues. La maintenir de façon incrémentale évite de comparer
+/// à nouveau chaque candidat à toute la sélection à chaque tour.
+#[derive(Debug)]
+struct SelectionState {
+    selected: Vec<WorkId>,
+    taken: Vec<bool>,
+    redundancy: Vec<f64>,
+    limits: LimitState,
+}
+
+impl SelectionState {
+    fn new(size: usize, capacity: usize) -> Self {
+        Self {
+            selected: Vec::with_capacity(capacity),
+            taken: vec![false; size],
+            redundancy: vec![0.0; size],
+            limits: LimitState::default(),
+        }
+    }
+}
+
 fn select_kind(
     choices: &[SelectionCandidate],
+    similarities: &[Vec<f64>],
     config: &DiversificationConfig,
     kind: RecommendationKind,
     count: usize,
     later_count: usize,
-    selected: &mut Vec<WorkId>,
-    limits: &mut LimitState,
+    state: &mut SelectionState,
 ) {
     for selected_for_kind in 0..count {
         let needed_after = count - selected_for_kind - 1 + later_count;
         let mut ranked = (0..choices.len())
-            .filter(|index| !selected.contains(&choices[*index].work.id()))
+            .filter(|index| !state.taken[*index])
             .map(|index| {
                 let relevance = match kind {
                     RecommendationKind::Safe => choices[index].safe_relevance,
-                    RecommendationKind::Exploration => choices[index].exploration.strength().get(),
+                    RecommendationKind::Exploration => {
+                        let alpha = config.exploration_strength_weight.get();
+                        alpha * choices[index].exploration.strength().get()
+                            + (1.0 - alpha) * choices[index].safe_relevance
+                    }
                 };
-                let redundancy = selected
-                    .iter()
-                    .map(|selected_id| {
-                        let selected_choice = choices
-                            .iter()
-                            .find(|choice| choice.work.id() == *selected_id)
-                            .expect("selected identifier comes from choices");
-                        work_similarity(&choices[index].work, &selected_choice.work)
-                    })
-                    .max_by(f64::total_cmp)
-                    .unwrap_or(0.0);
                 let lambda = config.mmr_relevance_weight.get();
-                let mmr = lambda * relevance - (1.0 - lambda) * redundancy;
+                let mmr = lambda * relevance - (1.0 - lambda) * state.redundancy[index];
                 (index, mmr, relevance)
             })
             .collect::<Vec<_>>();
@@ -492,26 +611,40 @@ fn select_kind(
             },
         );
 
+        let limits = &mut state.limits;
+        let taken = &state.taken;
         let next = ranked.into_iter().find_map(|(index, _, _)| {
             if !limits.allows(&choices[index].work, config) {
                 return None;
             }
             limits.add(&choices[index].work, config);
             let available = (0..choices.len())
-                .filter(|candidate| {
-                    *candidate != index && !selected.contains(&choices[*candidate].work.id())
-                })
+                .filter(|candidate| *candidate != index && !taken[*candidate])
                 .collect::<Vec<_>>();
-            let feasible = can_fill(choices, config, &available, limits, needed_after);
+            let feasible = needed_after <= capacity_ceiling(choices, config, &available)
+                && can_fill(choices, config, &available, limits, needed_after);
             limits.remove(&choices[index].work, config);
             feasible.then_some(index)
         });
         let index = next.expect("target size was proven feasible before selection");
-        limits.add(&choices[index].work, config);
-        selected.push(choices[index].work.id());
+        state.limits.add(&choices[index].work, config);
+        state.selected.push(choices[index].work.id());
+        state.taken[index] = true;
+        for (candidate, current) in state.redundancy.iter_mut().enumerate() {
+            let similarity = similarities[index][candidate];
+            if similarity > *current {
+                *current = similarity;
+            }
+        }
     }
 }
 
+/// Vérifie qu'une combinaison de `needed` candidats respecte tous les plafonds.
+///
+/// Deux élagages évitent d'explorer inutilement : la taille restante, et le
+/// nombre de candidats encore autorisés. Ajouter une œuvre ne peut que
+/// restreindre les plafonds, jamais les rouvrir : si moins de `needed`
+/// candidats sont autorisés maintenant, aucune descente n'y changera rien.
 fn can_fill(
     choices: &[SelectionCandidate],
     config: &DiversificationConfig,
@@ -523,6 +656,13 @@ fn can_fill(
         return true;
     }
     if available.len() < needed {
+        return false;
+    }
+    let allowed = available
+        .iter()
+        .filter(|index| limits.allows(&choices[**index].work, config))
+        .count();
+    if allowed < needed {
         return false;
     }
     for (position, index) in available.iter().copied().enumerate() {
@@ -626,20 +766,6 @@ fn dominant_tags(work: &NormalizedWork, limit: usize) -> Vec<String> {
         .take(limit)
         .map(|tag| tag.name().to_owned())
         .collect()
-}
-
-fn work_similarity(left: &NormalizedWork, right: &NormalizedWork) -> f64 {
-    let left = left
-        .tags()
-        .iter()
-        .map(|tag| (normalized_key(tag.name()), tag.weight().get()))
-        .collect::<BTreeMap<_, _>>();
-    let right = right
-        .tags()
-        .iter()
-        .map(|tag| (normalized_key(tag.name()), tag.weight().get()))
-        .collect::<BTreeMap<_, _>>();
-    cosine_similarity(&left, &right)
 }
 
 fn cosine_similarity(left: &BTreeMap<String, f64>, right: &BTreeMap<String, f64>) -> f64 {

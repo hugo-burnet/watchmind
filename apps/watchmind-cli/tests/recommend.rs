@@ -25,7 +25,8 @@ fn command_reports_filtering_and_explains_ranked_candidates_deterministically() 
     assert!(first.status.success());
     assert_eq!(first.stdout, second.stdout);
     let report = String::from_utf8(first.stdout).unwrap();
-    assert!(report.starts_with("candidates: catalog=8 accepted=3 seen=4"));
+    assert!(report.starts_with("candidates: catalog=8 accepted=3 retrieval=taste-aware"));
+    assert!(report.contains("seen=4"));
     assert!(report.contains("Raisons :"));
     assert!(report.contains("Risques :"));
     assert!(report.contains("type=sûre"));

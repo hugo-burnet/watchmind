@@ -22,6 +22,20 @@ Une note exactement moyenne est donc neutre, indépendamment de l'échelle de
 notation de la personne. La bande neutre évite de donner un sens excessif aux
 petits écarts.
 
+L'échelle `s` est apprise sur la dispersion réelle de l'utilisateur, avec un
+shrinkage vers la valeur de configuration et un plancher :
+
+```text
+s = max(plancher, (n × écart_type + shrinkage × rating_scale) / (n + shrinkage))
+```
+
+Une échelle fixe traiterait de la même façon quelqu'un qui note entre 1 et 10 et
+quelqu'un qui plafonne entre 7 et 8 : le second produirait des signaux plusieurs
+fois plus faibles à goût équivalent, et ses affinités de tags s'en trouveraient
+écrasées. Le shrinkage empêche un historique court d'imposer une échelle
+aberrante. `AffinityReport::rating_scale` expose l'échelle effectivement
+appliquée.
+
 Le cas « bon mais pas pour moi » est explicite lorsque la note atteint
 `good_rating_threshold` tout en restant sous la moyenne au-delà de la bande
 neutre. Il demeure un signal négatif de goût, mais son amplitude est multipliée
@@ -54,10 +68,17 @@ La pénalité est ainsi maximale au début et tend vers zéro en fin d'œuvre. U
 rewatch ne peut jamais réduire l'affinité et, à note égale, repousser un drop
 vers la fin ne peut jamais la réduire.
 
+Une œuvre abandonnée **sans note** produit également une affinité, portée par la
+seule pénalité d'abandon et marquée `RatingSignalKind::Unrated`. C'est souvent le
+signal négatif le plus franc d'un historique ; l'ignorer revenait à priver le
+profil de ses rejets les plus nets. Ces entrées suivent les notes, triées par
+identifiant, et ne sont produites que si l'œuvre existe au catalogue. L'import
+CSV exige une note sur chaque ligne : ce cas provient des chemins SQLite et API.
+
 ## Résultat explicable
 
 Chaque `PersonalAffinity` expose séparément `rating_signal`, `rewatch_bonus` et
 `drop_penalty`. Sa valeur est exactement leur somme. `RatingSignalKind` indique
-si le traitement de la note est positif, neutre, négatif ou
-`good_but_not_for_me`. Cette décomposition servira directement à
-l'apprentissage des tags du lot L05.
+si le traitement de la note est positif, neutre, négatif, `good_but_not_for_me`
+ou `unrated`. Cette décomposition sert directement à l'apprentissage des tags du
+lot L05.

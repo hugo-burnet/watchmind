@@ -18,6 +18,15 @@ La similarité est le cosinus des tags pondérés. Les égalités sont départag
 par pertinence, score brut puis identifiant AniList. La configuration V1 fixe
 `lambda` à `0.75`.
 
+La mise à l'échelle écrête les 5 % extrêmes de chaque côté avant de normaliser.
+Un min-max brut laissait un unique candidat aberrant comprimer tous les autres
+dans un mouchoir de poche, ce qui rendait l'arbitrage MMR dépendant de la
+composition du lot plutôt que des écarts réels.
+
+Les similarités deux à deux sont calculées une seule fois par appel, et la
+similarité maximale de chaque candidat à la sélection est maintenue de façon
+incrémentale au lieu d'être recalculée à chaque tour.
+
 ## Plafonds et taille
 
 La liste complète respecte simultanément les plafonds par franchise, studio et
@@ -30,6 +39,13 @@ restantes peuvent encore être remplies. Le moteur évite ainsi qu'un premier
 choix glouton réduise la liste alors qu'une combinaison valide existe. Si les
 plafonds rendent la taille demandée impossible, il retourne la plus grande
 liste faisable.
+
+Cette recherche est encadrée par deux bornes, car son coût explose précisément
+quand elle doit conclure par la négative. Une borne de capacité, linéaire,
+majore le nombre d'œuvres sélectionnables en traitant chaque famille de
+plafonds séparément. À l'intérieur de la descente, le nombre de candidats encore
+autorisés fournit une seconde borne : ajouter une œuvre ne peut que resserrer les
+plafonds, jamais les rouvrir.
 
 Les valeurs par défaut, sérialisées dans
 `fixtures/config/diversification-v1.json`, demandent 8 recommandations sûres et
@@ -48,3 +64,8 @@ un signal mesuré, jamais par tirage aléatoire :
 Le signal le plus fort devient un `ExplorationLabel` sérialisé avec son type,
 son intensité et un texte explicatif. La MMR s'applique aussi aux paris pour
 éviter que les deux places d'exploration soient des clones.
+
+La pertinence d'un pari mélange son intensité et sa pertinence sûre, pondérées
+par `exploration_strength_weight` (`0.6` par défaut). Classer les paris sur la
+seule étrangeté faisait d'une œuvre très incertaine et très mal scorée un
+candidat de premier choix : un pari doit rester un pari raisonnable.

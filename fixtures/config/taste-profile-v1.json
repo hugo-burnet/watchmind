@@ -1,6 +1,8 @@
 {
   "affinity": {
     "rating_scale": 2.0,
+    "rating_scale_shrinkage": 10.0,
+    "rating_scale_floor": 0.5,
     "rewatch_weight": 0.4,
     "rewatch_duration_reference_minutes": 300,
     "rewatch_duration_factor_min": 0.5,
@@ -12,6 +14,7 @@
     "neutral_band": 0.15
   },
   "tag_shrinkage": 2.0,
+  "tag_confidence_shrinkage": 150.0,
   "minimum_history_for_clustering": 30,
   "favorite_affinity_threshold": 0.25,
   "dominant_tags_per_pole": 5,

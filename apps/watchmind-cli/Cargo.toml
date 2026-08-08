@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-serde_json = "1.0"
+serde_json = { workspace = true }
 watchmind-recommendation = { path = "../../crates/recommendation" }
 
 [lints]

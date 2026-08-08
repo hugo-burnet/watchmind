@@ -209,11 +209,43 @@ pub fn evaluate_baselines(dataset: &OfflineDataset) -> Result<EvaluationReport, 
     evaluate_baselines_with(dataset, RELEVANT_RATING_THRESHOLD, RANDOM_SEED)
 }
 
+/// Quantile personnel qui plafonne le seuil de pertinence demandé.
+const RELEVANT_RATING_QUANTILE: f64 = 0.75;
+
+/// Seuil de pertinence effectif, borné par la distribution de l'utilisateur.
+///
+/// Un seuil absolu ignore la façon dont chacun note : un utilisateur sévère qui
+/// plafonne à 7 n'aurait aucune cible pertinente et l'évaluation échouerait,
+/// alors même que le reste du moteur raisonne en écart à la moyenne
+/// personnelle. On retient donc le plus petit du seuil demandé et du quantile
+/// haut de l'utilisateur : le seuil absolu continue de s'appliquer tel quel aux
+/// noteurs généreux.
+fn effective_relevant_threshold(dataset: &OfflineDataset, configured: f64) -> f64 {
+    let mut ratings = dataset
+        .ratings()
+        .iter()
+        .map(|record| record.rating().get())
+        .collect::<Vec<_>>();
+    if ratings.is_empty() {
+        return configured;
+    }
+    ratings.sort_by(f64::total_cmp);
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    let index = (((ratings.len() - 1) as f64) * RELEVANT_RATING_QUANTILE).ceil() as usize;
+    configured.min(ratings[index])
+}
+
 fn evaluate_baselines_with(
     dataset: &OfflineDataset,
     relevant_rating_threshold: f64,
     random_seed: u64,
 ) -> Result<EvaluationReport, EvaluationError> {
+    let relevant_rating_threshold =
+        effective_relevant_threshold(dataset, relevant_rating_threshold);
     let cases = evaluation_cases(dataset, relevant_rating_threshold);
     if cases.is_empty() {
         return Err(EvaluationError::NoRelevantRatings);
@@ -558,6 +590,7 @@ impl TemporalBacktest {
 pub struct FullEvaluationReport {
     configuration: FullEvaluationConfig,
     engine: BaselineResult,
+    pipeline: PipelineEvaluation,
     baselines: EvaluationReport,
     regressions: Vec<RegressionResult>,
     temporal_backtest: TemporalBacktest,
@@ -569,6 +602,12 @@ impl FullEvaluationReport {
     #[must_use]
     pub const fn engine(&self) -> &BaselineResult {
         &self.engine
+    }
+
+    /// Ce que le pipeline livré laisse effectivement passer.
+    #[must_use]
+    pub const fn pipeline(&self) -> &PipelineEvaluation {
+        &self.pipeline
     }
 
     #[must_use]
@@ -632,6 +671,16 @@ impl FullEvaluationReport {
             )
             .expect("writing to a String cannot fail");
         }
+        writeln!(
+            markdown,
+            "\n## Delivered pipeline\n\n{} cases, {} survived retrieval ({:.3}), {} reached the final list ({:.3}).",
+            self.pipeline.cases,
+            self.pipeline.retrieved,
+            self.pipeline.retrieval_recall,
+            self.pipeline.listed,
+            self.pipeline.list_recall,
+        )
+        .expect("writing to a String cannot fail");
         markdown.push_str("\n## Regression pairs\n\n");
         if self.regressions.is_empty() {
             markdown.push_str("No regression pair configured.\n");
@@ -760,6 +809,7 @@ pub fn evaluate_full(
         metrics: metrics(&engine_ranks),
         target_ranks: engine_ranks,
     };
+    let pipeline = evaluate_pipeline(dataset, &relevant_ids)?;
     let baselines = evaluate_baselines_with(dataset, config.relevant_rating_threshold, config.seed)
         .map_err(|_| FullEvaluationError::NoRelevantRatings)?;
     let regressions = evaluate_regressions(dataset, config)?;
@@ -801,6 +851,7 @@ pub fn evaluate_full(
     Ok(FullEvaluationReport {
         configuration: config.clone(),
         engine,
+        pipeline,
         baselines,
         regressions,
         temporal_backtest,
@@ -911,11 +962,108 @@ fn valid_iso_date(value: &str) -> bool {
     (1..=days).contains(&day)
 }
 
-fn rank_hidden_target(
+/// Survie de la cible à travers le pipeline réellement livré.
+///
+/// Les métriques de rang classent tout le catalogue et ignorent donc la
+/// troncature du retrieval comme la diversification. Ce bloc mesure ce que
+/// l'utilisateur reçoit vraiment : combien de cibles franchissent le retrieval,
+/// puis combien atteignent la liste finale. L'écart entre les deux chiffres est
+/// le coût de la sélection.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct PipelineEvaluation {
+    cases: usize,
+    retrieved: usize,
+    retrieval_recall: f64,
+    listed: usize,
+    list_recall: f64,
+}
+
+impl PipelineEvaluation {
+    #[must_use]
+    pub const fn cases(&self) -> usize {
+        self.cases
+    }
+
+    /// Cibles ayant survécu au retrieval borné.
+    #[must_use]
+    pub const fn retrieved(&self) -> usize {
+        self.retrieved
+    }
+
+    #[must_use]
+    pub const fn retrieval_recall(&self) -> f64 {
+        self.retrieval_recall
+    }
+
+    /// Cibles présentes dans la liste finale diversifiée.
+    #[must_use]
+    pub const fn listed(&self) -> usize {
+        self.listed
+    }
+
+    #[must_use]
+    pub const fn list_recall(&self) -> f64 {
+        self.list_recall
+    }
+}
+
+fn evaluate_pipeline(
+    dataset: &OfflineDataset,
+    relevant_ids: &[WorkId],
+) -> Result<PipelineEvaluation, FullEvaluationError> {
+    let engine = RecommendationEngine::default();
+    let request = crate::CandidateRequest::default();
+    let diversification = crate::DiversificationConfig::default();
+    let mut retrieved = 0;
+    let mut listed = 0;
+
+    for target in relevant_ids {
+        let (training, _) = training_split(dataset, *target, None)?;
+        let profile = build_taste_profile(&training, &TasteProfileConfig::default())?;
+        let candidates = engine.generate_candidates_for(&training, &request, Some(&profile));
+        if !candidates.works().iter().any(|work| work.id() == *target) {
+            continue;
+        }
+        retrieved += 1;
+        let list = engine
+            .recommend(&profile, &candidates, &diversification)
+            .map_err(|error| FullEvaluationError::InvalidConfiguration {
+                field: "diversification",
+                reason: error.to_string(),
+            })?;
+        if list
+            .recommendations()
+            .iter()
+            .any(|recommendation| recommendation.scored().work_id() == *target)
+        {
+            listed += 1;
+        }
+    }
+
+    let cases = relevant_ids.len();
+    #[allow(clippy::cast_precision_loss)]
+    let ratio = |count: usize| {
+        if cases == 0 {
+            0.0
+        } else {
+            count as f64 / cases as f64
+        }
+    };
+    Ok(PipelineEvaluation {
+        cases,
+        retrieved,
+        retrieval_recall: ratio(retrieved),
+        listed,
+        list_recall: ratio(listed),
+    })
+}
+
+/// Reconstitue l'historique d'entraînement d'un cas, cible masquée.
+fn training_split(
     dataset: &OfflineDataset,
     target: WorkId,
     training_ids: Option<&HashSet<WorkId>>,
-) -> Result<TargetRank, FullEvaluationError> {
+) -> Result<(OfflineDataset, HashSet<WorkId>), FullEvaluationError> {
     let ratings = dataset
         .ratings()
         .iter()
@@ -936,6 +1084,15 @@ fn rank_hidden_target(
         .cloned()
         .collect::<Vec<_>>();
     let training = OfflineDataset::from_parts(dataset.catalog().to_vec(), ratings, events)?;
+    Ok((training, rated_ids))
+}
+
+fn rank_hidden_target(
+    dataset: &OfflineDataset,
+    target: WorkId,
+    training_ids: Option<&HashSet<WorkId>>,
+) -> Result<TargetRank, FullEvaluationError> {
+    let (training, rated_ids) = training_split(dataset, target, training_ids)?;
     let profile = build_taste_profile(&training, &TasteProfileConfig::default())?;
     let candidates = training
         .catalog()
