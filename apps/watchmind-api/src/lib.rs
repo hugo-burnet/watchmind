@@ -529,8 +529,14 @@ async fn recommendations(State(state): State<ApiState>) -> Result<Json<Value>, A
         Some(snapshot) => state.database.snapshots().scores(snapshot.version).await?,
         None => Vec::new(),
     };
-    let discovered = match (state.discover)(1, 50, (state.clock)()).await {
-        Ok(result) => result.works,
+    let personal = load_dataset(&state.database).await?;
+    let personal_ids = personal
+        .catalog()
+        .iter()
+        .map(watchmind_recommendation::NormalizedWork::id)
+        .collect::<HashSet<_>>();
+    let visible_discovered = match discover_unseen(&state, &personal_ids, 50).await {
+        Ok(result) => result,
         Err(_) if current.is_some() => {
             let snapshot = current.expect("checked above");
             return Ok(Json(json!({
@@ -540,27 +546,9 @@ async fn recommendations(State(state): State<ApiState>) -> Result<Json<Value>, A
         }
         Err(error) => return Err(ApiError::internal(error)),
     };
-    let mut visible_discovered = Vec::new();
-    for work in discovered {
-        if state
-            .database
-            .preferences()
-            .get(&format!("hidden_work:{}", work.id().get()))
-            .await?
-            .is_none()
-        {
-            visible_discovered.push(work);
-        }
-    }
     for work in &visible_discovered {
         state.database.works().upsert(work).await?;
     }
-    let personal = load_dataset(&state.database).await?;
-    let personal_ids = personal
-        .catalog()
-        .iter()
-        .map(watchmind_recommendation::NormalizedWork::id)
-        .collect::<HashSet<_>>();
     let mut catalog = personal.catalog().to_vec();
     catalog.extend(
         visible_discovered
@@ -607,11 +595,63 @@ async fn historical_recommendations(
 }
 
 async fn evaluation(State(state): State<ApiState>) -> Result<Json<Value>, ApiError> {
-    let dataset = load_dataset(&state.database).await?;
+    let personal = load_dataset(&state.database).await?;
+    let personal_ids = personal
+        .catalog()
+        .iter()
+        .map(watchmind_recommendation::NormalizedWork::id)
+        .collect::<HashSet<_>>();
+    let discovered = discover_unseen(&state, &personal_ids, 50)
+        .await
+        .map_err(ApiError::internal)?;
+    let mut catalog = personal.catalog().to_vec();
+    catalog.extend(discovered);
+    let dataset = OfflineDataset::from_parts(
+        catalog,
+        personal.ratings().to_vec(),
+        personal.events().to_vec(),
+    )
+    .map_err(ApiError::bad_request)?;
     let report = evaluate_baselines(&dataset).map_err(ApiError::bad_request)?;
     Ok(Json(
         serde_json::to_value(report).map_err(ApiError::internal)?,
     ))
+}
+
+async fn discover_unseen(
+    state: &ApiState,
+    excluded: &HashSet<WorkId>,
+    target_count: usize,
+) -> Result<Vec<watchmind_recommendation::NormalizedWork>, String> {
+    let mut works = Vec::new();
+    let mut seen = excluded.clone();
+    for page in 1..=10 {
+        let response = match (state.discover)(page, 50, (state.clock)()).await {
+            Ok(response) => response,
+            Err(error) if works.is_empty() => return Err(error),
+            Err(_) => break,
+        };
+        if response.works.is_empty() {
+            break;
+        }
+        for work in response.works {
+            if seen.insert(work.id())
+                && state
+                    .database
+                    .preferences()
+                    .get(&format!("hidden_work:{}", work.id().get()))
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .is_none()
+            {
+                works.push(work);
+                if works.len() >= target_count {
+                    return Ok(works);
+                }
+            }
+        }
+    }
+    Ok(works)
 }
 
 fn calculate_snapshot(dataset: &OfflineDataset) -> Result<(Value, Vec<Value>), ApiError> {
