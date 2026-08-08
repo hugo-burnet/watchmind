@@ -21,6 +21,8 @@ scripts/check.ps1         contrôles qualité du workspace
 ```powershell
 cargo run -p watchmind-cli
 cargo run -p watchmind-cli -- import-csv fixtures/synthetic/ratings.csv --catalog fixtures/synthetic/catalog.json
+cargo run -p watchmind-cli -- compare-baselines fixtures/synthetic/ratings.csv --catalog fixtures/synthetic/catalog.json
+cargo run -p watchmind-cli -- compare-baselines fixtures/synthetic/ratings.csv --catalog fixtures/synthetic/catalog.json --json
 cargo test --workspace
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
@@ -34,3 +36,4 @@ powershell -ExecutionPolicy Bypass -File .\scripts\check.ps1
 
 La feuille de route détaillée se trouve dans [`ROADMAP_LOTS.md`](ROADMAP_LOTS.md). Les règles de conception orientée objet et de modules profonds sont définies dans [`docs/architecture-principles.md`](docs/architecture-principles.md).
 Le contrat des fixtures et les diagnostics d'import sont décrits dans [`docs/offline-import.md`](docs/offline-import.md).
+Le harness, les trois baselines et le contrat des rapports sont décrits dans [`docs/baseline-evaluation.md`](docs/baseline-evaluation.md).

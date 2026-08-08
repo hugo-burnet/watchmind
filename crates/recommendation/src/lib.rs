@@ -4,12 +4,17 @@
 //! suivants. Cette crate ne dépendra ni de l'API, ni de `SQLite`, ni du frontend.
 
 mod domain;
+mod evaluation;
 mod import;
 
 pub use domain::{
     AspectCredit, Contribution, ContributionSource, DomainError, DropProgress, NormalizedWork,
     PersonalAxis, Rating, RatingRecord, Ratio, RecommendationScore, ScoreDelta, TagWeight,
     WatchEvent, Weight, WorkId,
+};
+pub use evaluation::{
+    BaselineKind, BaselineResult, EvaluationError, EvaluationMetrics, EvaluationReport, TargetRank,
+    evaluate_baselines,
 };
 pub use import::{ImportError, ImportSummary, OfflineDataset};
 
