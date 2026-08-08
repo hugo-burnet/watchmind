@@ -34,5 +34,15 @@ Les écritures composites (œuvre + tags, note + aspects) sont transactionnelles
 contrat métier et remplace les données dans une transaction unique ; un échec
 annule toute la restauration.
 
+## Précision des flottants persistés
+
+Le workspace active la feature `float_roundtrip` de `serde_json`. Sans elle, la
+lecture d'un flottant dont la représentation courte demande dix-sept chiffres
+significatifs se décale d'un ULP. Les conséquences n'étaient pas cosmétiques :
+une explication relue cessait d'être bit à bit celle qui avait été calculée, et
+l'API créait une nouvelle version de profil à chaque appel alors que rien
+n'avait changé. `crates/infrastructure/tests/snapshot_precision.rs` verrouille
+l'aller-retour sur le vrai chemin de persistance.
+
 Les requêtes utilisent l'API dynamique de SQLx. La compilation est donc
 offline sans `DATABASE_URL`; le détail est consigné dans `.sqlx/README.md`.

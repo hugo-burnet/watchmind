@@ -2,6 +2,7 @@
   "safe_count": 8,
   "exploration_count": 2,
   "mmr_relevance_weight": 0.75,
+  "exploration_strength_weight": 0.6,
   "max_per_franchise": 1,
   "max_per_studio": 2,
   "max_per_dominant_tag": 3,

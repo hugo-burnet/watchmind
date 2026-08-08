@@ -6,5 +6,6 @@
   "minimum_global_score": null,
   "require_available": true,
   "require_prerequisites": true,
-  "limit": 100
+  "limit": 100,
+  "popularity_reserve": 0.25
 }

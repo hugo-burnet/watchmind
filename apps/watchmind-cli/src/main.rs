@@ -194,7 +194,8 @@ fn show_poles(arguments: &DatasetArguments) -> Result<(), String> {
 fn recommend(arguments: &DatasetArguments) -> Result<(), String> {
     let (dataset, profile) = load_profile(arguments)?;
     let engine = RecommendationEngine::default();
-    let candidates = engine.generate_candidates(&dataset, &CandidateRequest::default());
+    let candidates =
+        engine.generate_candidates_for(&dataset, &CandidateRequest::default(), Some(&profile));
     let recommendations = engine
         .recommend(&profile, &candidates, &DiversificationConfig::default())
         .map_err(|error| error.to_string())?;

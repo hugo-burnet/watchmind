@@ -22,6 +22,7 @@ const AXIS_PRIOR: f64 = 0.2;
 pub struct TasteProfileConfig {
     affinity: AffinityConfig,
     tag_shrinkage: f64,
+    tag_confidence_shrinkage: f64,
     minimum_history_for_clustering: usize,
     favorite_affinity_threshold: f64,
     dominant_tags_per_pole: usize,
@@ -34,6 +35,7 @@ pub struct TasteProfileConfig {
 struct TasteProfileConfigData {
     affinity: AffinityConfig,
     tag_shrinkage: f64,
+    tag_confidence_shrinkage: f64,
     minimum_history_for_clustering: usize,
     favorite_affinity_threshold: f64,
     dominant_tags_per_pole: usize,
@@ -46,6 +48,7 @@ impl Default for TasteProfileConfigData {
         Self {
             affinity: AffinityConfig::default(),
             tag_shrinkage: 2.0,
+            tag_confidence_shrinkage: 150.0,
             minimum_history_for_clustering: 30,
             favorite_affinity_threshold: 0.25,
             dominant_tags_per_pole: 5,
@@ -67,6 +70,13 @@ impl TryFrom<TasteProfileConfigData> for TasteProfileConfig {
 
     fn try_from(data: TasteProfileConfigData) -> Result<Self, Self::Error> {
         validate_positive("tag_shrinkage", data.tag_shrinkage)?;
+        validate_finite("tag_confidence_shrinkage", data.tag_confidence_shrinkage)?;
+        if data.tag_confidence_shrinkage < 0.0 {
+            return Err(ProfileError::InvalidConfiguration {
+                field: "tag_confidence_shrinkage",
+                reason: "must not be negative",
+            });
+        }
         validate_positive_count(
             "minimum_history_for_clustering",
             data.minimum_history_for_clustering,
@@ -90,6 +100,7 @@ impl TryFrom<TasteProfileConfigData> for TasteProfileConfig {
         Ok(Self {
             affinity: data.affinity,
             tag_shrinkage: data.tag_shrinkage,
+            tag_confidence_shrinkage: data.tag_confidence_shrinkage,
             minimum_history_for_clustering: data.minimum_history_for_clustering,
             favorite_affinity_threshold: data.favorite_affinity_threshold,
             dominant_tags_per_pole: data.dominant_tags_per_pole,
@@ -134,6 +145,9 @@ fn validate_positive_count(field: &'static str, value: usize) -> Result<(), Prof
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TagAffinity {
     name: String,
+    /// Clé de correspondance en minuscules, partagée avec le reste du moteur.
+    #[serde(skip)]
+    key: String,
     value: f64,
     confidence: Ratio,
     evidence_weight: f64,
@@ -144,6 +158,11 @@ impl TagAffinity {
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    #[must_use]
+    pub fn key(&self) -> &str {
+        &self.key
     }
 
     #[must_use]
@@ -318,11 +337,19 @@ impl TasteProfile {
         &self.tag_affinities
     }
 
+    /// Retrouve l'affinité apprise pour un tag, sans tenir compte de la casse.
+    ///
+    /// Les affinités sont triées par clé normalisée, ce qui permet une
+    /// recherche dichotomique. Le scoring interroge cette méthode pour chaque
+    /// tag de chaque candidat : un balayage linéaire y coûtait le produit des
+    /// deux volumes.
     #[must_use]
     pub fn tag_affinity(&self, name: &str) -> Option<&TagAffinity> {
+        let key = normalized_tag_key(name);
         self.tag_affinities
-            .iter()
-            .find(|affinity| affinity.name.eq_ignore_ascii_case(name))
+            .binary_search_by(|affinity| affinity.key.as_str().cmp(key.as_str()))
+            .ok()
+            .map(|index| &self.tag_affinities[index])
     }
 
     #[must_use]
@@ -419,9 +446,9 @@ pub fn build_taste_profile(
         })
         .collect::<Result<Vec<_>, ProfileError>>()?;
 
-    let tag_affinities = learn_tag_affinities(&vectors, history_size_u32, config)?;
+    let tag_affinities = learn_tag_affinities(&vectors, config)?;
     let tagged_works = vectors.iter().filter(|work| !work.tags.is_empty()).count();
-    let confidence = profile_confidence(tagged_works, history_size, config);
+    let confidence = profile_confidence(tagged_works, vectors.len(), history_size_u32, config);
     let (mode, poles) = build_poles(&vectors, history_size, config);
     let axes = learn_axis_profile(dataset.ratings(), config);
 
@@ -437,24 +464,34 @@ pub fn build_taste_profile(
 
 #[derive(Debug)]
 struct TagEvidence {
+    display_name: String,
     weighted_target: f64,
     total_weight: f64,
     observed_works: usize,
 }
 
+/// Apprend une affinité par tag, pondérée par les preuves accumulées.
+///
+/// La confiance est le seul facteur de volume : `w / (w + shrinkage)`, qui
+/// croît avec les preuves. Elle n'est délibérément pas multipliée par la part
+/// du tag dans l'historique, sinon noter des œuvres sans ce tag ferait
+/// *baisser* la confiance qu'on lui accorde, et les goûts de niche
+/// s'éteindraient à mesure que l'historique grandit.
 fn learn_tag_affinities(
     vectors: &[WorkVector],
-    history_size: u32,
     config: &TasteProfileConfig,
 ) -> Result<Vec<TagAffinity>, ProfileError> {
     let mut evidence = BTreeMap::<String, TagEvidence>::new();
     for work in vectors {
         for (name, weight) in &work.tags {
-            let entry = evidence.entry(name.clone()).or_insert(TagEvidence {
-                weighted_target: 0.0,
-                total_weight: 0.0,
-                observed_works: 0,
-            });
+            let entry = evidence
+                .entry(normalized_tag_key(name))
+                .or_insert_with(|| TagEvidence {
+                    display_name: name.clone(),
+                    weighted_target: 0.0,
+                    total_weight: 0.0,
+                    observed_works: 0,
+                });
             entry.weighted_target += weight * work.affinity;
             if !entry.weighted_target.is_finite() {
                 return Err(ProfileError::InvalidComputedValue {
@@ -468,16 +505,17 @@ fn learn_tag_affinities(
 
     Ok(evidence
         .into_iter()
-        .map(|(name, evidence)| {
+        .map(|(key, evidence)| {
             let value = evidence.weighted_target / (evidence.total_weight + config.tag_shrinkage);
             let volume = evidence.total_weight / (evidence.total_weight + config.tag_shrinkage);
-            let observed = u32::try_from(evidence.observed_works)
-                .expect("observed tag works cannot exceed history size");
-            let coverage = f64::from(observed) / f64::from(history_size);
+            #[allow(clippy::cast_precision_loss)]
+            let observations = evidence.observed_works as f64;
+            let breadth = observations / (observations + config.tag_confidence_shrinkage);
             TagAffinity {
-                name,
+                name: evidence.display_name,
+                key,
                 value,
-                confidence: ratio(volume * coverage),
+                confidence: ratio(volume * breadth),
                 evidence_weight: evidence.total_weight,
                 observed_works: evidence.observed_works,
             }
@@ -485,16 +523,45 @@ fn learn_tag_affinities(
         .collect())
 }
 
+/// Clé de correspondance d'un tag, commune au profil et à la diversification.
+pub(crate) fn normalized_tag_key(value: &str) -> String {
+    value.to_lowercase()
+}
+
+/// Similarité cosinus entre les tags d'une œuvre et la signature d'un pôle.
+///
+/// Point d'entrée unique du moteur : le scoring, le retrieval et la
+/// diversification comparent ainsi une œuvre à un pôle de la même façon, sur
+/// des clés normalisées.
+pub(crate) fn work_pole_similarity(work: &NormalizedWork, pole: &TastePole) -> f64 {
+    let candidate = work
+        .tags()
+        .iter()
+        .map(|tag| (normalized_tag_key(tag.name()), tag.weight().get()))
+        .collect::<BTreeMap<_, _>>();
+    let signature = pole
+        .dominant_tags()
+        .iter()
+        .map(|tag| (normalized_tag_key(tag.name()), tag.weight()))
+        .collect::<BTreeMap<_, _>>();
+    cosine_similarity(&candidate, &signature)
+}
+
+/// Confiance globale du profil : volume d'historique croisé avec la couverture
+/// en tags des œuvres réellement observées.
 fn profile_confidence(
     tagged_works: usize,
-    history_size: usize,
+    observed_works: usize,
+    history_size: u32,
     config: &TasteProfileConfig,
 ) -> Ratio {
-    let history_size = u32::try_from(history_size).expect("profile history size was validated");
-    let tagged_works = u32::try_from(tagged_works).expect("tagged works cannot exceed history");
+    if observed_works == 0 {
+        return ratio(0.0);
+    }
     let minimum_history = u32::try_from(config.minimum_history_for_clustering).unwrap_or(u32::MAX);
     let volume = f64::from(history_size) / f64::from(minimum_history);
-    let coverage = f64::from(tagged_works) / f64::from(history_size);
+    #[allow(clippy::cast_precision_loss)]
+    let coverage = tagged_works as f64 / observed_works as f64;
     ratio(volume.min(1.0) * coverage)
 }
 
@@ -581,30 +648,19 @@ fn cluster_favorites(
     pole_count: usize,
     config: &TasteProfileConfig,
 ) -> Vec<TastePole> {
-    let seed_ids = select_seeds(favorites, pole_count);
-    let mut centroids = seed_ids
-        .iter()
-        .map(|seed_id| {
-            favorites
-                .iter()
-                .find(|work| work.work_id == *seed_id)
-                .expect("selected seed comes from favorites")
-                .tags
-                .clone()
-        })
+    let distances = pairwise_distances(favorites);
+    let mut centroids = select_seeds(&distances, pole_count)
+        .into_iter()
+        .map(|seed| favorites[seed].tags.clone())
         .collect::<Vec<_>>();
     let mut assignments = vec![usize::MAX; favorites.len()];
 
     for _ in 0..CLUSTER_ITERATIONS {
         let next = favorites
             .iter()
-            .map(|work| {
-                seed_ids
-                    .iter()
-                    .position(|seed_id| *seed_id == work.work_id)
-                    .unwrap_or_else(|| closest_centroid(&work.tags, &centroids))
-            })
+            .map(|work| closest_centroid(&work.tags, &centroids))
             .collect::<Vec<_>>();
+        let next = repair_empty_clusters(favorites, &centroids, next, pole_count);
         let stable = next == assignments;
         assignments = next;
         centroids = (0..pole_count)
@@ -634,59 +690,126 @@ fn cluster_favorites(
         .collect()
 }
 
-fn select_seeds(favorites: &[WorkVector], count: usize) -> Vec<WorkId> {
-    let first = favorites
-        .iter()
-        .max_by(|left, right| {
-            left.affinity
-                .total_cmp(&right.affinity)
-                .then_with(|| right.work_id.cmp(&left.work_id))
+/// Distances cosinus deux à deux, calculées une seule fois par clustering.
+fn pairwise_distances(favorites: &[WorkVector]) -> Vec<Vec<f64>> {
+    let size = favorites.len();
+    let mut distances = vec![vec![0.0; size]; size];
+    for (left, work) in favorites.iter().enumerate() {
+        for (right, other) in favorites.iter().enumerate().skip(left + 1) {
+            let distance = 1.0 - cosine_similarity(&work.tags, &other.tags);
+            distances[left][right] = distance;
+            distances[right][left] = distance;
+        }
+    }
+    distances
+}
+
+/// Choisit les germes par k-means++ glouton et déterministe.
+///
+/// Le premier germe est le médoïde, donc un point de la zone dense. Chaque
+/// germe suivant est celui qui minimise le potentiel résiduel. L'échantillonnage
+/// du point le plus lointain, lui, retenait par construction les favoris les
+/// plus atypiques et ancrait chaque pôle sur un outlier.
+fn select_seeds(distances: &[Vec<f64>], count: usize) -> Vec<usize> {
+    let size = distances.len();
+    let medoid = (0..size)
+        .min_by(|left, right| {
+            potential_of(&distances[*left])
+                .total_cmp(&potential_of(&distances[*right]))
+                .then_with(|| left.cmp(right))
         })
         .expect("clustered favorites are not empty");
-    let mut seeds = vec![first.work_id];
+    let mut seeds = vec![medoid];
+    let mut nearest = distances[medoid]
+        .iter()
+        .map(|distance| distance * distance)
+        .collect::<Vec<_>>();
 
     while seeds.len() < count {
-        let mut best: Option<(&WorkVector, f64)> = None;
-        for candidate in favorites
-            .iter()
-            .filter(|candidate| !seeds.contains(&candidate.work_id))
-        {
-            let nearest_similarity = seeds
-                .iter()
-                .map(|seed_id| {
-                    let seed = favorites
-                        .iter()
-                        .find(|work| work.work_id == *seed_id)
-                        .expect("seed comes from favorites");
-                    cosine_similarity(&candidate.tags, &seed.tags)
-                })
-                .fold(f64::NEG_INFINITY, f64::max);
-            let distance = 1.0 - nearest_similarity;
-            let replace = best.is_none_or(|(current, current_distance)| {
-                distance.total_cmp(&current_distance).is_gt()
-                    || (distance.total_cmp(&current_distance).is_eq()
-                        && candidate.work_id < current.work_id)
-            });
-            if replace {
-                best = Some((candidate, distance));
+        let Some(best) = (0..size)
+            .filter(|index| !seeds.contains(index))
+            .min_by(|left, right| {
+                residual_potential(&distances[*left], &nearest)
+                    .total_cmp(&residual_potential(&distances[*right], &nearest))
+                    .then_with(|| left.cmp(right))
+            })
+        else {
+            break;
+        };
+        for (index, value) in nearest.iter_mut().enumerate() {
+            let alternative = distances[best][index] * distances[best][index];
+            if alternative < *value {
+                *value = alternative;
             }
         }
-        seeds.push(
-            best.expect("there are enough favorites for all seeds")
-                .0
-                .work_id,
-        );
+        seeds.push(best);
     }
     seeds
+}
+
+fn potential_of(distances: &[f64]) -> f64 {
+    distances
+        .iter()
+        .map(|distance| distance * distance)
+        .sum::<f64>()
+}
+
+fn residual_potential(distances: &[f64], nearest: &[f64]) -> f64 {
+    distances
+        .iter()
+        .zip(nearest)
+        .map(|(distance, current)| current.min(distance * distance))
+        .sum::<f64>()
+}
+
+/// Redonne un membre à chaque cluster vidé par l'affectation.
+///
+/// L'ancienne implémentation épinglait définitivement chaque germe à son
+/// cluster pour garantir des pôles non vides, au prix d'un centroïde qui ne
+/// pouvait plus dériver vers la vraie zone dense. On laisse désormais Lloyd
+/// travailler librement et on répare le seul effet indésirable : le cluster
+/// vide reçoit le point le plus mal servi par son propre centroïde.
+fn repair_empty_clusters(
+    favorites: &[WorkVector],
+    centroids: &[BTreeMap<String, f64>],
+    mut assignments: Vec<usize>,
+    pole_count: usize,
+) -> Vec<usize> {
+    let mut sizes = vec![0_usize; pole_count];
+    for assignment in &assignments {
+        sizes[*assignment] += 1;
+    }
+
+    for cluster in 0..pole_count {
+        if sizes[cluster] > 0 {
+            continue;
+        }
+        let donor = (0..favorites.len())
+            .filter(|index| sizes[assignments[*index]] > 1)
+            .min_by(|left, right| {
+                cosine_similarity(&favorites[*left].tags, &centroids[assignments[*left]])
+                    .total_cmp(&cosine_similarity(
+                        &favorites[*right].tags,
+                        &centroids[assignments[*right]],
+                    ))
+                    .then_with(|| favorites[*left].work_id.cmp(&favorites[*right].work_id))
+            });
+        if let Some(donor) = donor {
+            sizes[assignments[donor]] -= 1;
+            assignments[donor] = cluster;
+            sizes[cluster] += 1;
+        }
+    }
+    assignments
 }
 
 fn closest_centroid(tags: &BTreeMap<String, f64>, centroids: &[BTreeMap<String, f64>]) -> usize {
     centroids
         .iter()
         .enumerate()
+        .map(|(index, centroid)| (index, cosine_similarity(tags, centroid)))
         .max_by(|(left_index, left), (right_index, right)| {
-            cosine_similarity(tags, left)
-                .total_cmp(&cosine_similarity(tags, right))
+            left.total_cmp(right)
                 .then_with(|| right_index.cmp(left_index))
         })
         .expect("at least two centroids exist")

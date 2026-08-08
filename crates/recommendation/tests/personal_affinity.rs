@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 use watchmind_recommendation::{
     AffinityConfig, AffinityError, OfflineDataset, RatingSignalKind, WorkId, calculate_affinities,
 };
@@ -65,7 +67,7 @@ fn treats_good_but_not_for_me_as_a_distinct_soft_negative_signal() {
     );
     let report = calculate_affinities(&dataset, &AffinityConfig::default()).unwrap();
     let affinity = report.affinity_for(WorkId::new(3).unwrap()).unwrap();
-    let raw_centered = (7.0 - report.personal_mean().get()) / 2.0;
+    let raw_centered = (7.0 - report.personal_mean().get()) / report.rating_scale();
 
     assert_eq!(
         affinity.rating_signal_kind(),
@@ -130,6 +132,95 @@ fn refuses_an_empty_history() {
         calculate_affinities(&dataset, &AffinityConfig::default()).unwrap_err(),
         AffinityError::NoRatings
     );
+}
+
+/// Un noteur qui plafonne entre 7 et 8 doit produire des signaux comparables à
+/// un noteur qui utilise toute la plage. Avec une échelle fixe, le premier
+/// produisait des signaux cinq fois plus faibles à goût équivalent.
+#[test]
+fn adapts_the_rating_scale_to_the_personal_dispersion() {
+    let rows = |low: &str, high: &str| {
+        let mut csv = String::new();
+        for index in 1..=60 {
+            let rating = if index % 2 == 0 { high } else { low };
+            writeln!(csv, "{index},{rating},completed,,,0").unwrap();
+        }
+        csv
+    };
+    let works = (1..=60).map(|id| (id, 300)).collect::<Vec<_>>();
+
+    let compressed = dataset(&rows("7.0", "8.0"), &works);
+    let spread = dataset(&rows("5.0", "10.0"), &works);
+    let compressed = calculate_affinities(&compressed, &AffinityConfig::default()).unwrap();
+    let spread = calculate_affinities(&spread, &AffinityConfig::default()).unwrap();
+
+    assert!(compressed.rating_scale() < spread.rating_scale());
+    assert!(compressed.rating_scale() > 0.0);
+
+    let top = |report: &watchmind_recommendation::AffinityReport| {
+        report
+            .affinity_for(WorkId::new(2).unwrap())
+            .unwrap()
+            .rating_signal()
+    };
+    let ratio = top(&spread) / top(&compressed);
+    assert!(
+        ratio < 2.0,
+        "les deux noteurs restent comparables, ratio observé {ratio}"
+    );
+
+    let fixed_ratio = ((10.0 - 7.5) / 2.0) / ((8.0 - 7.5) / 2.0);
+    assert!(
+        fixed_ratio > 4.0,
+        "une échelle fixe aurait creusé l'écart, ratio {fixed_ratio}"
+    );
+}
+
+/// Un abandon sans note est le signal négatif le plus franc de l'historique :
+/// il ne doit pas être invisible pour le profil.
+#[test]
+fn learns_from_drops_that_were_never_rated() {
+    use watchmind_recommendation::{
+        DropProgress, NormalizedWork, Rating, RatingRecord, WatchEvent,
+    };
+
+    let catalog = vec![
+        NormalizedWork::new(
+            WorkId::new(1).unwrap(),
+            "Noté",
+            Some(Rating::new(8.0).unwrap()),
+            Vec::new(),
+        )
+        .unwrap(),
+        NormalizedWork::new(
+            WorkId::new(2).unwrap(),
+            "Abandonné sans note",
+            Some(Rating::new(8.0).unwrap()),
+            Vec::new(),
+        )
+        .unwrap(),
+    ];
+    let ratings = vec![
+        RatingRecord::new(
+            WorkId::new(1).unwrap(),
+            Rating::new(8.0).unwrap(),
+            Vec::new(),
+        )
+        .unwrap(),
+    ];
+    let events = vec![WatchEvent::dropped(
+        WorkId::new(2).unwrap(),
+        DropProgress::new(1, 24).unwrap(),
+    )];
+    let dataset = OfflineDataset::from_parts(catalog, ratings, events).unwrap();
+
+    let report = calculate_affinities(&dataset, &AffinityConfig::default()).unwrap();
+    let dropped = report.affinity_for(WorkId::new(2).unwrap()).unwrap();
+
+    assert_eq!(dropped.rating_signal_kind(), RatingSignalKind::Unrated);
+    assert!((dropped.rating_signal() - 0.0).abs() < f64::EPSILON);
+    assert!(dropped.drop_penalty() < 0.0);
+    assert!(dropped.value() < 0.0);
 }
 
 #[test]

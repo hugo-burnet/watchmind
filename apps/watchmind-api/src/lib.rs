@@ -704,10 +704,11 @@ fn calculate_snapshot(dataset: &OfflineDataset) -> Result<(Value, Vec<Value>), A
             .filter_map(|work| {
                 let global_score = work.global_score()?.get();
                 let value = (global_score - 5.0) / 50.0;
+                let qualifier = if value < 0.0 { "faible" } else { "élevé" };
                 let contribution = json!({
                     "source": { "kind": "anilist_prior" },
                     "value": value,
-                    "detail": format!("Prior AniList faible ({global_score:.1}/10)")
+                    "detail": format!("Prior AniList {qualifier} ({global_score:.1}/10)")
                 });
                 Some(json!({
                     "work_id": work.id(),

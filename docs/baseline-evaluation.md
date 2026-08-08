@@ -7,7 +7,12 @@ connaît ni les règles de classement ni les formules.
 
 ## Construction des cas
 
-Une note personnelle supérieure ou égale à `8.0` définit une œuvre pertinente.
+Une œuvre est pertinente lorsque sa note personnelle atteint le seuil effectif,
+soit `min(8.0, quantile 0,75 des notes de l'utilisateur)`. Le seuil absolu
+s'applique tel quel à un noteur généreux ; un noteur sévère qui plafonne à 7
+reste évaluable sur ses propres favoris au lieu de voir son historique refusé.
+Seul un historique sans aucune note produit `NoRelevantRatings`.
+
 Chaque œuvre pertinente devient successivement la cible d'un cas :
 
 1. la cible est masquée de l'historique ;

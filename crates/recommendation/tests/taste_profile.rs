@@ -61,13 +61,15 @@ fn configuration_fixture_is_the_documented_v1_default() {
 }
 
 #[test]
-fn learns_exact_shrunk_tag_affinity_and_volume_coverage_confidence() {
+fn learns_exact_shrunk_tag_affinity_and_volume_breadth_confidence() {
     let dataset = imported_dataset(&[(1, 10.0, &[("Shared", 0.8)]), (2, 6.0, &[("Shared", 0.4)])]);
     let profile = build_taste_profile(&dataset, &TasteProfileConfig::default()).unwrap();
     let shared = profile.tag_affinity("shared").unwrap();
 
+    // L'étendue sature sur le nombre d'œuvres portant le tag, jamais sur la
+    // taille de l'historique : noter d'autres œuvres ne peut pas la réduire.
     let expected_affinity = (0.8 - 0.4) / (0.8 + 0.4 + 2.0);
-    let expected_confidence = ((0.8 + 0.4) / (0.8 + 0.4 + 2.0)) * 1.0;
+    let expected_confidence = ((0.8 + 0.4) / (0.8 + 0.4 + 2.0)) * (2.0 / (2.0 + 150.0));
     assert!((shared.value() - expected_affinity).abs() < 1.0e-12);
     assert!((shared.confidence().get() - expected_confidence).abs() < 1.0e-12);
     assert_eq!(shared.observed_works(), 2);

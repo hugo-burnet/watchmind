@@ -1,10 +1,10 @@
-use std::{collections::BTreeMap, error::Error, fmt};
+use std::{error::Error, fmt};
 
 use serde::{Deserialize, Serialize};
 
 use crate::{
     Contribution, ContributionSource, DomainError, NormalizedWork, RecommendationScore, ScoreDelta,
-    TastePole, TasteProfile, WorkId,
+    TasteProfile, WorkId,
 };
 
 const POSITIVE_REASON_LIMIT: usize = 3;
@@ -284,6 +284,16 @@ impl RecommendationEngine {
         })
     }
 
+    /// Ajoute une contribution par tag connu du profil.
+    ///
+    /// Le terme reste une **somme** et non une moyenne. Diviser par la masse
+    /// des tags de l'œuvre paraît plus propre — un titre richement tagué ne
+    /// devrait pas accumuler mécaniquement plus de contributions — mais la
+    /// mesure sur un historique réel de 150 notes fait chuter le MRR de 0,282 à
+    /// 0,145. Le nombre de tags porte une information réelle : une œuvre
+    /// abondamment documentée sur `AniList` l'est parce qu'elle est vue et
+    /// commentée. Tant que l'évaluation n'aura pas un catalogue assez large
+    /// pour séparer ce signal de la simple notoriété, on garde la somme.
     fn add_tag_contributions(
         &self,
         profile: &TasteProfile,
@@ -319,15 +329,10 @@ impl RecommendationEngine {
         work: &NormalizedWork,
         contributions: &mut Vec<Contribution>,
     ) -> Result<(), ScoringError> {
-        let candidate = work
-            .tags()
-            .iter()
-            .map(|tag| (tag.name().to_owned(), tag.weight().get()))
-            .collect::<BTreeMap<_, _>>();
         let best = profile
             .poles()
             .iter()
-            .map(|pole| (pole, pole_similarity(&candidate, pole)))
+            .map(|pole| (pole, crate::profile::work_pole_similarity(work, pole)))
             .max_by(|(left_pole, left), (right_pole, right)| {
                 left.total_cmp(right)
                     .then_with(|| right_pole.ordinal().cmp(&left_pole.ordinal()))
@@ -349,10 +354,11 @@ impl RecommendationEngine {
     ) -> Result<(), ScoringError> {
         if let Some(global_score) = work.global_score() {
             let centered = (global_score.get() - 5.0) / 5.0;
+            let qualifier = if centered < 0.0 { "faible" } else { "élevé" };
             contributions.push(contribution(
                 ContributionSource::AnilistPrior,
                 centered * self.scoring.anilist_prior,
-                format!("Prior AniList faible ({:.1}/10)", global_score.get()),
+                format!("Prior AniList {qualifier} ({:.1}/10)", global_score.get()),
             )?);
         }
         Ok(())
@@ -365,33 +371,6 @@ fn contribution(
     detail: String,
 ) -> Result<Contribution, ScoringError> {
     Ok(Contribution::new(source, ScoreDelta::new(value)?, detail)?)
-}
-
-fn pole_similarity(candidate: &BTreeMap<String, f64>, pole: &TastePole) -> f64 {
-    let pole = pole
-        .dominant_tags()
-        .iter()
-        .map(|tag| (tag.name().to_owned(), tag.weight()))
-        .collect::<BTreeMap<_, _>>();
-    cosine_similarity(candidate, &pole)
-}
-
-fn cosine_similarity(left: &BTreeMap<String, f64>, right: &BTreeMap<String, f64>) -> f64 {
-    let dot = left
-        .iter()
-        .map(|(name, value)| value * right.get(name).copied().unwrap_or_default())
-        .sum::<f64>();
-    let left_norm = left.values().map(|value| value * value).sum::<f64>().sqrt();
-    let right_norm = right
-        .values()
-        .map(|value| value * value)
-        .sum::<f64>()
-        .sqrt();
-    if left_norm == 0.0 || right_norm == 0.0 {
-        0.0
-    } else {
-        dot / (left_norm * right_norm)
-    }
 }
 
 /// Échec de configuration ou de calcul du score.

@@ -184,7 +184,7 @@ impl Database {
 
     /// Efface atomiquement toutes les données applicatives.
     /// # Errors
-    /// Annule toute la transaction si SQLite refuse une suppression.
+    /// Annule toute la transaction si `SQLite` refuse une suppression.
     pub async fn clear(&self) -> Result<(), StorageError> {
         let mut transaction = self.pool.begin().await?;
         sqlx::query("DELETE FROM profile_snapshots")

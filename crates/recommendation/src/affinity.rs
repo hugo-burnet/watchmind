@@ -1,4 +1,8 @@
-use std::{collections::HashMap, error::Error, fmt};
+use std::{
+    collections::{HashMap, HashSet},
+    error::Error,
+    fmt,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -12,6 +16,8 @@ use crate::{OfflineDataset, Rating, RuntimeMinutes, WatchEvent, WorkId};
 #[serde(try_from = "AffinityConfigData")]
 pub struct AffinityConfig {
     rating_scale: f64,
+    rating_scale_shrinkage: f64,
+    rating_scale_floor: f64,
     rewatch_weight: f64,
     rewatch_duration_reference_minutes: u32,
     rewatch_duration_factor_min: f64,
@@ -27,6 +33,8 @@ pub struct AffinityConfig {
 #[serde(default, deny_unknown_fields)]
 struct AffinityConfigData {
     rating_scale: f64,
+    rating_scale_shrinkage: f64,
+    rating_scale_floor: f64,
     rewatch_weight: f64,
     rewatch_duration_reference_minutes: u32,
     rewatch_duration_factor_min: f64,
@@ -42,6 +50,8 @@ impl Default for AffinityConfigData {
     fn default() -> Self {
         Self {
             rating_scale: 2.0,
+            rating_scale_shrinkage: 10.0,
+            rating_scale_floor: 0.5,
             rewatch_weight: 0.4,
             rewatch_duration_reference_minutes: 300,
             rewatch_duration_factor_min: 0.5,
@@ -66,6 +76,8 @@ impl TryFrom<AffinityConfigData> for AffinityConfig {
 
     fn try_from(data: AffinityConfigData) -> Result<Self, Self::Error> {
         validate_positive("rating_scale", data.rating_scale)?;
+        validate_non_negative("rating_scale_shrinkage", data.rating_scale_shrinkage)?;
+        validate_positive("rating_scale_floor", data.rating_scale_floor)?;
         validate_non_negative("rewatch_weight", data.rewatch_weight)?;
         if data.rewatch_duration_reference_minutes == 0 {
             return Err(AffinityError::InvalidConfiguration {
@@ -97,6 +109,8 @@ impl TryFrom<AffinityConfigData> for AffinityConfig {
 
         Ok(Self {
             rating_scale: data.rating_scale,
+            rating_scale_shrinkage: data.rating_scale_shrinkage,
+            rating_scale_floor: data.rating_scale_floor,
             rewatch_weight: data.rewatch_weight,
             rewatch_duration_reference_minutes: data.rewatch_duration_reference_minutes,
             rewatch_duration_factor_min: data.rewatch_duration_factor_min,
@@ -118,6 +132,8 @@ pub enum RatingSignalKind {
     Neutral,
     Negative,
     GoodButNotForMe,
+    /// Œuvre abandonnée sans note : seuls les signaux de visionnage parlent.
+    Unrated,
 }
 
 /// Affinité calculée pour une œuvre, décomposée en signaux auditables.
@@ -173,6 +189,7 @@ impl PersonalAffinity {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct AffinityReport {
     personal_mean: Rating,
+    rating_scale: f64,
     affinities: Vec<PersonalAffinity>,
 }
 
@@ -180,6 +197,12 @@ impl AffinityReport {
     #[must_use]
     pub const fn personal_mean(&self) -> Rating {
         self.personal_mean
+    }
+
+    /// Échelle effectivement appliquée pour centrer et réduire les notes.
+    #[must_use]
+    pub const fn rating_scale(&self) -> f64 {
+        self.rating_scale
     }
 
     #[must_use]
@@ -233,12 +256,13 @@ impl fmt::Display for AffinityError {
 
 impl Error for AffinityError {}
 
-/// Calcule une cible d'affinité centrée pour chaque œuvre notée.
+/// Calcule une cible d'affinité centrée pour chaque œuvre du vécu.
 ///
-/// Les résultats suivent l'ordre stable des notes du dataset. La note est
-/// centrée sur la moyenne personnelle ; les rewatches ajoutent un bonus
-/// logarithmique corrigé par la durée ; un abandon ajoute une pénalité dont
-/// l'amplitude décroît avec la progression.
+/// Les résultats suivent l'ordre stable des notes du dataset, puis celui des
+/// abandons non notés triés par identifiant. La note est centrée sur la moyenne
+/// personnelle et réduite par l'échelle personnelle ; les rewatches ajoutent un
+/// bonus logarithmique corrigé par la durée ; un abandon ajoute une pénalité
+/// dont l'amplitude décroît avec la progression.
 ///
 /// # Errors
 ///
@@ -261,6 +285,10 @@ pub fn calculate_affinities(
         .sum::<f64>()
         / f64::from(rating_count);
     let personal_mean = Rating::new(mean).map_err(|_| AffinityError::InvalidComputedMean)?;
+    let rating_scale = personal_rating_scale(dataset, mean, rating_count, config);
+    if !rating_scale.is_finite() || rating_scale <= 0.0 {
+        return Err(AffinityError::InvalidComputedMean);
+    }
 
     let runtimes = dataset
         .catalog()
@@ -269,12 +297,12 @@ pub fn calculate_affinities(
         .collect::<HashMap<_, _>>();
     let event_signals = aggregate_events(dataset.events())?;
 
-    let affinities = dataset
+    let mut affinities = dataset
         .ratings()
         .iter()
         .map(|record| {
             let work_id = record.work_id();
-            let centered = (record.rating().get() - mean) / config.rating_scale;
+            let centered = (record.rating().get() - mean) / rating_scale;
             let kind = rating_signal_kind(record.rating(), centered, config);
             let rating_signal = if kind == RatingSignalKind::GoodButNotForMe {
                 centered * config.good_but_not_for_me_multiplier
@@ -283,33 +311,98 @@ pub fn calculate_affinities(
             };
             let events = event_signals.get(&work_id).copied().unwrap_or_default();
             let runtime = runtimes.get(&work_id).copied().flatten();
-            let rewatch_bonus = rewatch_bonus(events.rewatch_count, runtime, config);
-            let drop_penalty = drop_penalty(events.drop_progress, config);
-            let value = rating_signal + rewatch_bonus + drop_penalty;
-            if !rating_signal.is_finite()
-                || !rewatch_bonus.is_finite()
-                || !drop_penalty.is_finite()
-                || !value.is_finite()
-            {
-                return Err(AffinityError::InvalidComputedAffinity { work_id });
-            }
-
-            Ok(PersonalAffinity {
-                work_id,
-                value,
-                rating_signal,
-                rewatch_bonus,
-                drop_penalty,
-                rating_signal_kind: kind,
-                rewatch_count: events.rewatch_count,
-            })
+            personal_affinity(work_id, rating_signal, kind, events, runtime, config)
         })
         .collect::<Result<Vec<_>, _>>()?;
 
+    let rated = dataset
+        .ratings()
+        .iter()
+        .map(crate::RatingRecord::work_id)
+        .collect::<HashSet<_>>();
+    let mut unrated_drops = event_signals
+        .iter()
+        .filter(|(work_id, signals)| {
+            signals.drop_progress.is_some()
+                && !rated.contains(*work_id)
+                && runtimes.contains_key(*work_id)
+        })
+        .map(|(work_id, signals)| (*work_id, *signals))
+        .collect::<Vec<_>>();
+    unrated_drops.sort_by_key(|(work_id, _)| *work_id);
+    for (work_id, events) in unrated_drops {
+        let runtime = runtimes.get(&work_id).copied().flatten();
+        affinities.push(personal_affinity(
+            work_id,
+            0.0,
+            RatingSignalKind::Unrated,
+            events,
+            runtime,
+            config,
+        )?);
+    }
+
     Ok(AffinityReport {
         personal_mean,
+        rating_scale,
         affinities,
     })
+}
+
+/// Assemble une affinité à partir de son signal de note et de ses événements.
+fn personal_affinity(
+    work_id: WorkId,
+    rating_signal: f64,
+    kind: RatingSignalKind,
+    events: EventSignals,
+    runtime: Option<RuntimeMinutes>,
+    config: &AffinityConfig,
+) -> Result<PersonalAffinity, AffinityError> {
+    let rewatch_bonus = rewatch_bonus(events.rewatch_count, runtime, config);
+    let drop_penalty = drop_penalty(events.drop_progress, config);
+    let value = rating_signal + rewatch_bonus + drop_penalty;
+    if !rating_signal.is_finite()
+        || !rewatch_bonus.is_finite()
+        || !drop_penalty.is_finite()
+        || !value.is_finite()
+    {
+        return Err(AffinityError::InvalidComputedAffinity { work_id });
+    }
+    Ok(PersonalAffinity {
+        work_id,
+        value,
+        rating_signal,
+        rewatch_bonus,
+        drop_penalty,
+        rating_signal_kind: kind,
+        rewatch_count: events.rewatch_count,
+    })
+}
+
+/// Échelle de réduction des notes, apprise sur la dispersion de l'utilisateur.
+///
+/// Une échelle fixe traite de la même façon un noteur qui utilise toute la
+/// plage et un noteur qui plafonne entre 7 et 8 : le premier produit des
+/// signaux énormes, le second des signaux négligeables. L'écart-type empirique
+/// rend le modèle indépendant de l'amplitude de notation, et le shrinkage vers
+/// `rating_scale` évite qu'un historique court impose une échelle aberrante.
+fn personal_rating_scale(
+    dataset: &OfflineDataset,
+    mean: f64,
+    rating_count: u32,
+    config: &AffinityConfig,
+) -> f64 {
+    let count = f64::from(rating_count);
+    let variance = dataset
+        .ratings()
+        .iter()
+        .map(|record| (record.rating().get() - mean).powi(2))
+        .sum::<f64>()
+        / count;
+    let deviation = variance.sqrt();
+    let blended = (count * deviation + config.rating_scale_shrinkage * config.rating_scale)
+        / (count + config.rating_scale_shrinkage);
+    blended.max(config.rating_scale_floor)
 }
 
 #[derive(Debug, Clone, Copy, Default)]

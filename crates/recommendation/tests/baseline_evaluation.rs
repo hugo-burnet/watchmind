@@ -58,11 +58,29 @@ fn text_and_json_reports_are_byte_for_byte_deterministic() {
     assert_eq!(first.to_json().unwrap(), second.to_json().unwrap());
 }
 
+/// Le seuil de pertinence suit la distribution de l'utilisateur. Un noteur qui
+/// ne dépasse jamais 6 doit rester évaluable sur ses propres favoris, sans quoi
+/// le harness refuserait son historique alors que le reste du moteur raisonne
+/// déjà en écart à sa moyenne.
 #[test]
-fn refuses_a_dataset_without_a_relevant_rating() {
+fn evaluates_a_harsh_rater_on_their_own_distribution() {
     let ratings = "work_id,rating,status,drop_position,total_episodes,rewatches\n\
                    3,6.0,completed,,,0\n\
                    4,4.0,dropped,3,24,0\n";
+    let dataset = OfflineDataset::import(
+        ratings.as_bytes(),
+        fixture("fixtures/synthetic/catalog.json"),
+    )
+    .unwrap();
+
+    let report = evaluate_baselines(&dataset).unwrap();
+    assert_eq!(report.cases(), 1);
+    assert_eq!(report.baselines().len(), 3);
+}
+
+#[test]
+fn refuses_a_dataset_without_any_rating() {
+    let ratings = "work_id,rating,status,drop_position,total_episodes,rewatches\n";
     let dataset = OfflineDataset::import(
         ratings.as_bytes(),
         fixture("fixtures/synthetic/catalog.json"),
