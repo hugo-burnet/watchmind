@@ -24,8 +24,8 @@ use watchmind_infrastructure::{
     AniListCatalog, Database, LibraryEntry, ProfileSnapshot, StorageError,
 };
 use watchmind_recommendation::{
-    AspectCredit, OfflineDataset, Rating, RatingRecord, RecommendationEngine, TasteProfileConfig,
-    WatchEvent, WorkId, build_taste_profile, evaluate_baselines,
+    AspectCredit, FullEvaluationConfig, OfflineDataset, Rating, RatingRecord, RecommendationEngine,
+    TasteProfileConfig, WatchEvent, WorkId, build_taste_profile, evaluate_full,
 };
 
 type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
@@ -612,10 +612,17 @@ async fn evaluation(State(state): State<ApiState>) -> Result<Json<Value>, ApiErr
         personal.events().to_vec(),
     )
     .map_err(ApiError::bad_request)?;
-    let report = evaluate_baselines(&dataset).map_err(ApiError::bad_request)?;
-    Ok(Json(
-        serde_json::to_value(report).map_err(ApiError::internal)?,
-    ))
+    let report =
+        evaluate_full(&dataset, &FullEvaluationConfig::default()).map_err(ApiError::bad_request)?;
+    let mut payload = serde_json::to_value(report.baselines()).map_err(ApiError::internal)?;
+    payload
+        .as_object_mut()
+        .expect("an evaluation report always serializes as an object")
+        .insert(
+            "engine".to_owned(),
+            serde_json::to_value(report.engine()).map_err(ApiError::internal)?,
+        );
+    Ok(Json(payload))
 }
 
 async fn discover_unseen(

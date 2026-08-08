@@ -308,9 +308,15 @@ h1 { max-width: 12ch; font-size: clamp(3.1rem, 7vw, 6.8rem); font-weight: 650; l
 .evaluation-threshold strong { font: 650 2rem/1 var(--font-display); }
 .evaluation-threshold small { color: var(--ink-soft); font: 600 .56rem/1.4 var(--font-utility); text-transform: uppercase; }
 .evaluation-board { max-width: 82rem; margin: 0 auto; }
-.baseline-grid { display: grid; grid-template-columns: repeat(3, 1fr); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.baseline-grid { display: grid; grid-template-columns: repeat(4, 1fr); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .baseline-grid article { padding: var(--space-4); border-right: 1px solid var(--line); }
 .baseline-grid article:last-child { border-right: 0; }
+.baseline-grid .evaluation-engine { position: relative; background: var(--nav); color: var(--paper); }
+.evaluation-engine::before { position: absolute; inset: 0 0 auto; height: 3px; background: var(--coral); content: ""; }
+.evaluation-engine .eyebrow, .evaluation-engine .metric-main { color: var(--coral); }
+.evaluation-engine .metric-main + span, .evaluation-engine dt { color: rgba(255,255,255,.68); }
+.evaluation-engine dl div { border-color: rgba(255,255,255,.16); }
+.evaluation-engine__label { display: block; margin-top: .4rem; font: 600 .55rem/1 var(--font-utility); text-transform: uppercase; letter-spacing: .08em; }
 .metric-main { display: block; margin-top: var(--space-3); color: var(--violet); font: 650 clamp(4rem, 8vw, 7rem)/.75 var(--font-display); }
 .metric-main small { font-size: .3em; }
 .metric-main + span { color: var(--ink-soft); font-size: .85rem; }

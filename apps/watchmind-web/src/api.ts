@@ -50,7 +50,14 @@ export type ProfileSnapshot = { version: number; created_at_unix: number; profil
 export type EvaluationReport = {
   cases: number;
   configuration: { random_seed: number; relevant_rating_threshold: number };
+  engine: EvaluationResult;
   baselines: { name: "random" | "anilist_global_score" | "tag_overlap"; metrics: { median_rank: number; recall_at_10: number; recall_at_20: number; mean_reciprocal_rank: number }; target_ranks: { work_id: number; rank: number }[] }[];
+};
+
+export type EvaluationResult = {
+  name: "watch_mind" | "watchmind" | "random" | "anilist_global_score" | "tag_overlap";
+  metrics: { median_rank: number; recall_at_10: number; recall_at_20: number; mean_reciprocal_rank: number };
+  target_ranks: { work_id: number; rank: number }[];
 };
 
 type CatalogResponse = { works: Work[]; from_cache: boolean };
