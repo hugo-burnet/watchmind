@@ -71,3 +71,5 @@ et sauvegardes sont décrits dans
 [`docs/catalog-and-storage.md`](docs/catalog-and-storage.md).
 L'API de bibliothèque, les recommandations versionnées et leur lancement sont
 décrits dans [`docs/http-api.md`](docs/http-api.md).
+La direction visuelle, les tokens et le socle React du lot 15 sont décrits dans
+[`docs/frontend-foundation.md`](docs/frontend-foundation.md).

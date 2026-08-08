@@ -8,3 +8,13 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 cargo test --workspace
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+if (Get-Command npm -ErrorAction SilentlyContinue) {
+    Push-Location apps/watchmind-web
+    npm run build
+    if ($LASTEXITCODE -ne 0) {
+        Pop-Location
+        exit $LASTEXITCODE
+    }
+    Pop-Location
+}
