@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "apps/watchmind-cli",
+    "crates/infrastructure",
     "crates/recommendation",
 ]
 resolver = "3"

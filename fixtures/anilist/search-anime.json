@@ -1,0 +1,21 @@
+{
+  "data": {
+    "Page": {
+      "media": [{
+        "id": 1535,
+        "title": { "userPreferred": "Death Note", "romaji": "Death Note", "english": "Death Note", "native": "DEATH NOTE" },
+        "averageScore": 84,
+        "duration": 23,
+        "episodes": 37,
+        "format": "TV",
+        "startDate": { "year": 2006 },
+        "tags": [
+          { "name": "Crime", "rank": 90, "isMediaSpoiler": false },
+          { "name": "Detective", "rank": 82, "isMediaSpoiler": false },
+          { "name": "Spoiler", "rank": 70, "isMediaSpoiler": true }
+        ],
+        "studios": { "nodes": [{ "name": "Madhouse" }] }
+      }]
+    }
+  }
+}

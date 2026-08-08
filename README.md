@@ -19,6 +19,7 @@ La désactivation globale de Smart App Control n'est pas requise pour WatchMind.
 ```text
 apps/watchmind-cli/       binaire CLI
 crates/recommendation/    moteur de recommandation isolé
+crates/infrastructure/    adaptateurs AniList, cache catalogue et SQLite
 docs/                     documentation technique
 fixtures/                 datasets et cas de test locaux
 scripts/check.ps1         contrôles qualité du workspace
@@ -65,3 +66,6 @@ L'évaluation complète et le verrou configurable du moteur sont décrits dans
 [`docs/complete-evaluation.md`](docs/complete-evaluation.md). Les huit commandes
 de la CLI V1 et leurs contrats de sortie sont résumés dans
 [`docs/cli-v1.md`](docs/cli-v1.md).
+Le client AniList, son cache déterministe, les migrations SQLite, repositories
+et sauvegardes sont décrits dans
+[`docs/catalog-and-storage.md`](docs/catalog-and-storage.md).
